@@ -1,4 +1,7 @@
 import Fastify from 'fastify';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
+import { fileURLToPath } from 'node:url';
 import type { Pool } from 'pg';
 import { registerErrorHandler } from './common/error-handler.js';
 import { accountRoutes } from './modules/accounts/account.routes.js';
@@ -16,6 +19,27 @@ export function buildApp(
     logController: new Fastify.LogController({ disableRequestLogging: true }),
   });
   registerErrorHandler(app);
+  app.register(swagger, {
+    mode: 'static',
+    specification: {
+      path: fileURLToPath(new URL('../openapi.yaml', import.meta.url)),
+      baseDir: fileURLToPath(new URL('../', import.meta.url)),
+    },
+  });
+  app.register(swaggerUi, {
+    routePrefix: '/docs',
+    theme: { title: 'Confluencr | API Documentation' },
+    staticCSP: true,
+    uiConfig: {
+      docExpansion: 'list',
+      deepLinking: true,
+      displayRequestDuration: true,
+      tryItOutEnabled: false,
+      persistAuthorization: false,
+      defaultModelsExpandDepth: 1,
+      validatorUrl: null,
+    },
+  });
   accountRoutes(app, pool);
   transactionRoutes(app, pool);
   transferRoutes(app, pool);

@@ -1,0 +1,784 @@
+{
+  "info": {
+    "name": "Confluencr Transaction Ledger API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Contract version 1.0.0. Run in listed order against a development database. Creates fresh Alice/Bob accounts, captures IDs and generates a new run_id for reference isolation. Final balances: Alice 50.00 / Bob 80.00. Re-running creates another pair of accounts; no ledger history is deleted. No authentication is implemented. See docs/API_REFERENCE.md for failure recovery and exact error semantics. Generated from scripts/postman.ts and openapi.yaml; regenerate with npm run docs:generate."
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:3000",
+      "type": "string"
+    },
+    {
+      "key": "run_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "source_account_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "destination_account_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "01 Health and initialize run",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/health",
+        "description": "01 Health and initialize run",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set(\"run_id\", pm.variables.replaceIn(\"{{$guid}}\"));",
+              "pm.collectionVariables.unset(\"source_account_id\");",
+              "pm.collectionVariables.unset(\"destination_account_id\");"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"01 Health and initialize run: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"01 Health and initialize run: response contract\", function () {",
+              "  pm.expect(body.status).to.equal(\"ok\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Database readiness",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/ready",
+        "description": "02 Database readiness",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"02 Database readiness: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"02 Database readiness: response contract\", function () {",
+              "  pm.expect(body.status).to.equal(\"ready\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 Create Alice",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/accounts",
+        "description": "03 Create Alice",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Alice\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"03 Create Alice: HTTP 201\", function () { pm.response.to.have.status(201); });",
+              "const body = pm.response.json();",
+              "pm.test(\"03 Create Alice: response contract\", function () {",
+              "  pm.expect(body.name).to.equal(\"Alice\");",
+              "  pm.expect(body.balance).to.equal(\"0.00\");",
+              "  pm.expect(body.id).to.match(/^[0-9a-f-]{36}$/);",
+              "  pm.collectionVariables.set(\"source_account_id\", body.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 Create Bob",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/accounts",
+        "description": "04 Create Bob",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Bob\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"04 Create Bob: HTTP 201\", function () { pm.response.to.have.status(201); });",
+              "const body = pm.response.json();",
+              "pm.test(\"04 Create Bob: response contract\", function () {",
+              "  pm.expect(body.name).to.equal(\"Bob\");",
+              "  pm.expect(body.balance).to.equal(\"0.00\");",
+              "  pm.expect(body.id).to.match(/^[0-9a-f-]{36}$/);",
+              "  pm.collectionVariables.set(\"destination_account_id\", body.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 Credit Alice 100",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions",
+        "description": "05 Credit Alice 100",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"credit\",\n  \"amount\": \"100.00\",\n  \"description\": \"Initial deposit\",\n  \"reference_id\": \"docs-{{run_id}}-deposit\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"05 Credit Alice 100: HTTP 201\", function () { pm.response.to.have.status(201); });",
+              "const body = pm.response.json();",
+              "pm.test(\"05 Credit Alice 100: response contract\", function () {",
+              "  pm.expect(body.amount).to.equal(\"100.00\");",
+              "  pm.expect(body.description).to.equal(\"Initial deposit\");",
+              "  pm.expect(body.transfer_id).to.equal(null);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Credit Bob 50 with same account-scoped reference",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/accounts/{{destination_account_id}}/transactions",
+        "description": "06 Credit Bob 50 with same account-scoped reference",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"credit\",\n  \"amount\": \"50.00\",\n  \"description\": \"Initial deposit\",\n  \"reference_id\": \"docs-{{run_id}}-deposit\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"06 Credit Bob 50 with same account-scoped reference: HTTP 201\", function () { pm.response.to.have.status(201); });",
+              "const body = pm.response.json();",
+              "pm.test(\"06 Credit Bob 50 with same account-scoped reference: response contract\", function () {",
+              "  pm.expect(body.amount).to.equal(\"50.00\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 Debit Alice 20 with generated description",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions",
+        "description": "07 Debit Alice 20 with generated description",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"debit\",\n  \"amount\": \"20.00\",\n  \"reference_id\": \"docs-{{run_id}}-withdrawal\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"07 Debit Alice 20 with generated description: HTTP 201\", function () { pm.response.to.have.status(201); });",
+              "const body = pm.response.json();",
+              "pm.test(\"07 Debit Alice 20 with generated description: response contract\", function () {",
+              "  pm.expect(body.amount).to.equal(\"20.00\");",
+              "  pm.expect(body.description).to.equal(\"Debit transaction\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 Alice balance before transfer",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/balance",
+        "description": "08 Alice balance before transfer",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"08 Alice balance before transfer: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"08 Alice balance before transfer: response contract\", function () {",
+              "  pm.expect(body.balance).to.equal(\"80.00\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 Transfer 30 from Alice to Bob",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/transfers",
+        "description": "09 Transfer 30 from Alice to Bob",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"from_account_id\": \"{{source_account_id}}\",\n  \"to_account_id\": \"{{destination_account_id}}\",\n  \"amount\": \"30.00\",\n  \"reference_id\": \"docs-{{run_id}}-transfer\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"09 Transfer 30 from Alice to Bob: HTTP 201\", function () { pm.response.to.have.status(201); });",
+              "const body = pm.response.json();",
+              "pm.test(\"09 Transfer 30 from Alice to Bob: response contract\", function () {",
+              "  pm.expect(body.amount).to.equal(\"30.00\");",
+              "  pm.expect(body.transactions).to.have.length(2);",
+              "  pm.expect(body.transactions.map(t => t.type)).to.deep.equal([\"debit\", \"credit\"]);",
+              "  pm.expect(body.transactions.map(t => t.description)).to.deep.equal([\"Transfer to Bob\", \"Transfer from Alice\"]);",
+              "  body.transactions.forEach(t => { pm.expect(t.transfer_id).to.equal(body.id); pm.expect(t.amount).to.equal(\"30.00\"); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 Alice final balance",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/balance",
+        "description": "10 Alice final balance",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"10 Alice final balance: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"10 Alice final balance: response contract\", function () {",
+              "  pm.expect(body.balance).to.equal(\"50.00\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11 Bob final balance",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{destination_account_id}}/balance",
+        "description": "11 Bob final balance",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"11 Bob final balance: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"11 Bob final balance: response contract\", function () {",
+              "  pm.expect(body.balance).to.equal(\"80.00\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "12 Alice history page 1",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions?page=1&limit=2",
+        "description": "12 Alice history page 1",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"12 Alice history page 1: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"12 Alice history page 1: response contract\", function () {",
+              "  pm.expect(body.data).to.have.length(2);",
+              "  pm.expect(body.pagination).to.deep.equal({page: 1, limit: 2, total_records: 3, total_pages: 2});",
+              "  pm.expect(body.data.map(t => t.type)).to.deep.equal([\"debit\", \"debit\"]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "13 Alice history page 2",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions?page=2&limit=2",
+        "description": "13 Alice history page 2",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"13 Alice history page 2: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"13 Alice history page 2: response contract\", function () {",
+              "  pm.expect(body.data).to.have.length(1);",
+              "  pm.expect(body.data[0].type).to.equal(\"credit\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "14 Alice credit filter",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions?type=credit&page=1&limit=20",
+        "description": "14 Alice credit filter",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"14 Alice credit filter: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"14 Alice credit filter: response contract\", function () {",
+              "  pm.expect(body.pagination.total_records).to.equal(1);",
+              "  pm.expect(body.data[0].type).to.equal(\"credit\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "15 Alice debit filter",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions?type=debit&page=1&limit=20",
+        "description": "15 Alice debit filter",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"15 Alice debit filter: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"15 Alice debit filter: response contract\", function () {",
+              "  pm.expect(body.pagination.total_records).to.equal(2);",
+              "  pm.expect(body.data.every(t => t.type === \"debit\")).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "16 Duplicate posting returns original",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions",
+        "description": "16 Duplicate posting returns original",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"credit\",\n  \"amount\": \"100.00\",\n  \"description\": \"Initial deposit\",\n  \"reference_id\": \"docs-{{run_id}}-deposit\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"16 Duplicate posting returns original: HTTP 409\", function () { pm.response.to.have.status(409); });",
+              "const body = pm.response.json();",
+              "pm.test(\"16 Duplicate posting returns original: response contract\", function () {",
+              "  pm.expect(body.error.code).to.equal(\"DUPLICATE_TRANSACTION\");",
+              "  pm.expect(body.error.details[0].amount).to.equal(\"100.00\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "17 Duplicate transfer returns metadata",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/transfers",
+        "description": "17 Duplicate transfer returns metadata",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"from_account_id\": \"{{source_account_id}}\",\n  \"to_account_id\": \"{{destination_account_id}}\",\n  \"amount\": \"30.00\",\n  \"reference_id\": \"docs-{{run_id}}-transfer\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"17 Duplicate transfer returns metadata: HTTP 409\", function () { pm.response.to.have.status(409); });",
+              "const body = pm.response.json();",
+              "pm.test(\"17 Duplicate transfer returns metadata: response contract\", function () {",
+              "  pm.expect(body.error.code).to.equal(\"DUPLICATE_TRANSFER\");",
+              "  pm.expect(body.error.details[0].amount).to.equal(\"30.00\");",
+              "  pm.expect(body.error.details[0]).not.to.have.property(\"transactions\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "18 Reject overdraft",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions",
+        "description": "18 Reject overdraft",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"debit\",\n  \"amount\": \"51.00\",\n  \"reference_id\": \"docs-{{run_id}}-overdraft\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"18 Reject overdraft: HTTP 422\", function () { pm.response.to.have.status(422); });",
+              "const body = pm.response.json();",
+              "pm.test(\"18 Reject overdraft: response contract\", function () {",
+              "  pm.expect(body.error.code).to.equal(\"INSUFFICIENT_BALANCE\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "19 Reject zero amount",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions",
+        "description": "19 Reject zero amount",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"credit\",\n  \"amount\": \"0\",\n  \"description\": \"Initial deposit\",\n  \"reference_id\": \"docs-{{run_id}}-zero\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"19 Reject zero amount: HTTP 400\", function () { pm.response.to.have.status(400); });",
+              "const body = pm.response.json();",
+              "pm.test(\"19 Reject zero amount: response contract\", function () {",
+              "  pm.expect(body.error.code).to.equal(\"VALIDATION_ERROR\");",
+              "  pm.expect(body.error.details[0].path).to.equal(\"amount\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "20 Reject invalid account UUID",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/not-a-uuid/balance",
+        "description": "20 Reject invalid account UUID",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"20 Reject invalid account UUID: HTTP 400\", function () { pm.response.to.have.status(400); });",
+              "const body = pm.response.json();",
+              "pm.test(\"20 Reject invalid account UUID: response contract\", function () {",
+              "  pm.expect(body.error.code).to.equal(\"INVALID_ACCOUNT_ID\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "21 Missing account",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/00000000-0000-4000-8000-000000000000/balance",
+        "description": "21 Missing account",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"21 Missing account: HTTP 404\", function () { pm.response.to.have.status(404); });",
+              "const body = pm.response.json();",
+              "pm.test(\"21 Missing account: response contract\", function () {",
+              "  pm.expect(body.error.code).to.equal(\"ACCOUNT_NOT_FOUND\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "22 Rejected writes leave history unchanged",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/transactions?page=1&limit=20",
+        "description": "22 Rejected writes leave history unchanged",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"22 Rejected writes leave history unchanged: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"22 Rejected writes leave history unchanged: response contract\", function () {",
+              "  pm.expect(body.pagination.total_records).to.equal(3);",
+              "  pm.expect(body.data.every(t => typeof t.description === \"string\" && t.description.trim().length > 0)).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "23 Alice balance remains 50",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{source_account_id}}/balance",
+        "description": "23 Alice balance remains 50",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"23 Alice balance remains 50: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"23 Alice balance remains 50: response contract\", function () {",
+              "  pm.expect(body.balance).to.equal(\"50.00\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "24 Bob balance remains 80",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/accounts/{{destination_account_id}}/balance",
+        "description": "24 Bob balance remains 80",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"24 Bob balance remains 80: HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test(\"24 Bob balance remains 80: response contract\", function () {",
+              "  pm.expect(body.balance).to.equal(\"80.00\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
