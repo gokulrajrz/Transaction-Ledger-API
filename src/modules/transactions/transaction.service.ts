@@ -103,29 +103,35 @@ export async function getHistory(
   accountId: string,
   query: HistoryQuery,
 ) {
-  const account = await pool.query(
-    'SELECT 1 FROM ledger.accounts WHERE id = $1',
-    [accountId],
-  );
-  if (!account.rowCount) accountNotFound();
-  const filter = 'account_id = $1 AND ($2::text IS NULL OR type = $2)';
-  const values = [accountId, query.type ?? null];
-  const count = await pool.query<{ total: string }>(
-    `SELECT count(*) AS total FROM ledger.transactions WHERE ${filter}`,
-    values,
-  );
-  const result = await pool.query<LedgerTransaction>(
-    `SELECT * FROM ledger.transactions WHERE ${filter} ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4`,
-    [...values, query.limit, (query.page - 1) * query.limit],
-  );
-  const total = Number(count.rows[0]!.total);
-  return {
-    data: result.rows,
-    pagination: {
-      page: query.page,
-      limit: query.limit,
-      total_records: total,
-      total_pages: Math.ceil(total / query.limit),
+  return inTransaction(
+    pool,
+    async (client) => {
+      const account = await client.query(
+        'SELECT 1 FROM ledger.accounts WHERE id = $1',
+        [accountId],
+      );
+      if (!account.rowCount) accountNotFound();
+      const filter = 'account_id = $1 AND ($2::text IS NULL OR type = $2)';
+      const values = [accountId, query.type ?? null];
+      const count = await client.query<{ total: string }>(
+        `SELECT count(*) AS total FROM ledger.transactions WHERE ${filter}`,
+        values,
+      );
+      const result = await client.query<LedgerTransaction>(
+        `SELECT * FROM ledger.transactions WHERE ${filter} ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4`,
+        [...values, query.limit, (query.page - 1) * query.limit],
+      );
+      const total = Number(count.rows[0]!.total);
+      return {
+        data: result.rows,
+        pagination: {
+          page: query.page,
+          limit: query.limit,
+          total_records: total,
+          total_pages: Math.ceil(total / query.limit),
+        },
+      };
     },
-  };
+    'snapshot',
+  );
 }

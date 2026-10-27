@@ -1,6 +1,6 @@
 # Confluencr Transaction Ledger API
 
-**API contract 1.0.0 · OpenAPI 3.0.3 · Node.js 24 / Fastify / PostgreSQL**
+**API contract 1.0.0 · OpenAPI 3.0.3 · Node.js 22.9+ / Fastify / PostgreSQL**
 
 This reference describes the implemented API for accounts, immutable credit/debit entries and atomic account transfers. The machine-readable contract is [openapi.yaml](../openapi.yaml). Configuration and database setup are in the [README](../README.md).
 
@@ -39,7 +39,7 @@ This reference describes the implemented API for accounts, immutable credit/debi
 | Resource paths     | Unversioned; no `/api` or `/v1` prefix                    |
 | Request body       | JSON object, `Content-Type: application/json`             |
 | Response body      | JSON for business/operational endpoints                   |
-| Money              | Decimal strings; never JSON numbers                       |
+| Money              | String or numeric inputs; decimal-string outputs          |
 | Identifiers        | UUID strings; accepted UUID inputs normalize to lowercase |
 | Time               | System-generated ISO 8601 timestamps serialized in UTC    |
 | Request body limit | 16 KiB; oversized bodies return 413                       |
@@ -80,29 +80,29 @@ Examples below use illustrative UUIDs. Always replace them with IDs returned by 
 
 ### Exact money
 
-`amount` must be a positive decimal **string** no greater than `9999999999999999.99`. Up to sixteen integer digits and two fractional digits are accepted.
+`amount` accepts a positive decimal **string or finite JSON number** with up to two fractional digits, and normalizes to a two-place decimal string. Strings support up to `9999999999999999.99`. Numeric inputs cannot exceed `9007199254740991` (`Number.MAX_SAFE_INTEGER`); use strings for large exact values because JSON numbers are parsed as JavaScript floating point. Fractional cents are rejected without rounding.
 
-| Accepted                              | Rejected                                                  |
-| ------------------------------------- | --------------------------------------------------------- |
-| `"10"`, `"10.5"`, `"10.50"`, `"0.01"` | `10`, `0`, `"0"`, `"0.00"`, `"-1"`                        |
-| `"9999999999999999.99"`               | `"10000000000000000"`, `"1.001"`                          |
-| Ordinary decimal notation             | `"1e3"`, `"NaN"`, `"Infinity"`, `"01"`, `" 1"`, `"1,000"` |
+| Accepted                                  | Rejected                                                  |
+| ----------------------------------------- | --------------------------------------------------------- |
+| `50`, `10.5`, `"10"`, `"10.50"`, `"0.01"` | `0`, `-1`, `1.001`, `"0"`, `"0.00"`, `"-1"`               |
+| `"9999999999999999.99"`                   | `"10000000000000000"`, `"1.001"`                          |
+| Ordinary decimal notation                 | `"1e3"`, `"NaN"`, `"Infinity"`, `"01"`, `" 1"`, `"1,000"` |
 
 Returned amounts and balances always have two decimal places. PostgreSQL NUMERIC(18,2) performs the arithmetic; clients should retain decimal strings or use a decimal library instead of binary floating-point money arithmetic. A balance overflow causes an atomic database failure and a sanitized 500 response.
 
 ### Names, descriptions and references
 
-| Field                              | Rules                                                                                              |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `name`                             | Required string; trimmed before validation; 1–200 characters after trimming                        |
-| `description` on a posting request | Optional string, maximum 2,000 characters; explicit null rejected                                  |
-| `reference_id`                     | Required, nonblank string, maximum 200 characters; exact case and surrounding whitespace preserved |
-| Unknown body fields                | Rejected with 400                                                                                  |
-| NUL characters in text             | Rejected with 400                                                                                  |
+| Field                                      | Rules                                                                                              |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `name`                                     | Required string; trimmed before validation; 1–200 characters after trimming                        |
+| `description` on a posting request         | Optional string, maximum 2,000 characters; explicit null rejected                                  |
+| `reference_id`                             | Required, nonblank string, maximum 200 characters; exact case and surrounding whitespace preserved |
+| Unknown body fields                        | Rejected with 400                                                                                  |
+| NUL or unpaired Unicode surrogates in text | Rejected with 400                                                                                  |
 
 Missing, empty or whitespace-only posting descriptions become `Credit transaction` or `Debit transaction`. Supplied nonblank text is preserved. Transfers generate `Transfer to <destination name>` and `Transfer from <source name>` from the locked account records.
 
-Every new ledger entry requires a nonblank description. Historical immutable entries created before that rule may still contain null or blank descriptions; history and duplicate responses preserve their original values.
+Every new ledger entry requires a nonblank description, enforced by the initial schema. Older installations may retain original null/blank historical descriptions; history and duplicate responses preserve those immutable values.
 
 For standalone postings, a reference beginning with the exact prefix `transfer/` is rejected because that namespace belongs to generated transfer entries. Transfer **metadata** references use the general nonblank reference rules. Prefer opaque references or business-operation identifiers with a clear per-operation lifetime.
 
@@ -184,13 +184,13 @@ Failures: 400 `INVALID_ACCOUNT_ID`, 404 `ACCOUNT_NOT_FOUND`, or sanitized 500. T
 
 `POST /accounts/{id}/transactions`
 
-| Field          | Type                | Required | Rules                                        |
-| -------------- | ------------------- | -------- | -------------------------------------------- |
-| `id`           | path UUID           | Yes      | Existing account                             |
-| `type`         | body string         | Yes      | Exactly `credit` or `debit`                  |
-| `amount`       | body decimal string | Yes      | Positive, exact money format                 |
-| `reference_id` | body string         | Yes      | Unique within this account                   |
-| `description`  | body string         | No       | Preserved when nonblank; otherwise generated |
+| Field          | Type                  | Required | Rules                                        |
+| -------------- | --------------------- | -------- | -------------------------------------------- |
+| `id`           | path UUID             | Yes      | Existing account                             |
+| `type`         | body string           | Yes      | Exactly `credit` or `debit`                  |
+| `amount`       | body string or number | Yes      | Positive, exact money format                 |
+| `reference_id` | body string           | Yes      | Unique within this account                   |
+| `description`  | body string           | No       | Preserved when nonblank; otherwise generated |
 
 Credit example:
 
@@ -278,7 +278,7 @@ curl -sS "$BASE_URL/accounts/$ACCOUNT_ID/transactions?type=credit&page=1&limit=2
 
 `total_records` and `total_pages` use the same type filter as `data`. Empty histories return an empty array and zero total pages. A page beyond the end returns an empty array while preserving the filtered totals. Results sort by PostgreSQL `created_at DESC, id DESC`.
 
-This is offset pagination. Count and page queries run under ordinary READ COMMITTED behavior and can observe adjacent committed snapshots during concurrent writes. Pagination is not a stable export snapshot; concurrent inserts may shift entries between pages.
+This is offset pagination. Account existence, count and page queries share one REPEATABLE READ READ ONLY transaction, so totals and data use the same committed snapshot. Pagination is not a stable export snapshot; concurrent inserts may shift entries between pages.
 
 Failures: 400 `INVALID_ACCOUNT_ID` or `INVALID_PAGINATION`, 404 `ACCOUNT_NOT_FOUND`, or sanitized 500.
 
@@ -286,12 +286,12 @@ Failures: 400 `INVALID_ACCOUNT_ID` or `INVALID_PAGINATION`, 404 `ACCOUNT_NOT_FOU
 
 `POST /transfers`
 
-| Body field        | Type           | Required | Rules                                        |
-| ----------------- | -------------- | -------- | -------------------------------------------- |
-| `from_account_id` | UUID string    | Yes      | Existing source account                      |
-| `to_account_id`   | UUID string    | Yes      | Existing, different destination account      |
-| `amount`          | decimal string | Yes      | Positive exact money; source must have funds |
-| `reference_id`    | string         | Yes      | Unique for this source account's transfers   |
+| Body field        | Type             | Required | Rules                                        |
+| ----------------- | ---------------- | -------- | -------------------------------------------- |
+| `from_account_id` | UUID string      | Yes      | Existing source account                      |
+| `to_account_id`   | UUID string      | Yes      | Existing, different destination account      |
+| `amount`          | string or number | Yes      | Positive exact money; source must have funds |
+| `reference_id`    | string           | Yes      | Unique for this source account's transfers   |
 
 Descriptions are generated by the backend. A `description` property in the transfer request is an unknown field and is rejected.
 
@@ -531,7 +531,7 @@ The client timeout is a client choice, not a server-side overall deadline or can
 
 ## Operational behavior and compatibility
 
-- Configuration validates before listening. Startup verifies database/schema read access; migrations are applied separately.
+- Configuration validates before listening. Startup verifies database/schema read access, enforced integrity constraints and enabled immutability triggers; migrations are applied separately.
 - One connection pool is shared per process. Defaults: maximum 10 clients, connection/acquisition timeout 10 seconds, idle timeout 30 seconds, statement timeout 30 seconds and lock timeout 5 seconds.
 - Statement timeout applies per SQL statement. These values do not define a guaranteed end-to-end HTTP deadline or service-level objective.
 - SIGINT/SIGTERM closes the server and pool. Clients must still reconcile interrupted mutation outcomes using their original references.

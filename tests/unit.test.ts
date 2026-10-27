@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import type { Pool, PoolClient } from 'pg';
 import { loadConfig } from '../src/config/env.js';
 import { amount } from '../src/common/validation.js';
@@ -6,12 +7,20 @@ import { inTransaction } from '../src/db/transaction.js';
 import { buildApp } from '../src/app.js';
 
 describe('money contract', () => {
-  it.each(['10', '10.5', '10.50', '0.01', '9999999999999999.99'])(
-    'accepts %s',
-    (input) => {
-      expect(amount.parse(input)).toBe(input);
-    },
-  );
+  it.each([
+    ['10', '10.00'],
+    ['10.5', '10.50'],
+    ['10.50', '10.50'],
+    ['0.01', '0.01'],
+    ['9999999999999999.99', '9999999999999999.99'],
+    [50, '50.00'],
+    [10.5, '10.50'],
+    [0.01, '0.01'],
+    [90071992547409.9, '90071992547409.90'],
+    [Number.MAX_SAFE_INTEGER, '9007199254740991.00'],
+  ])('normalizes %s to %s', (input, expected) => {
+    expect(amount.parse(input)).toBe(expected);
+  });
   it.each([
     '0',
     '0.00',
@@ -27,7 +36,14 @@ describe('money contract', () => {
     '.1',
     '01',
     '',
-    1,
+    0,
+    -1,
+    1.001,
+    1.005,
+    NaN,
+    Infinity,
+    -Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
     null,
   ])('rejects %s', (input) => {
     expect(amount.safeParse(input).success).toBe(false);
@@ -65,7 +81,10 @@ describe('configuration', () => {
 
 describe('transaction client lifecycle', () => {
   function mockPool(query = vi.fn().mockResolvedValue({ rows: [] })) {
-    const client = { query, release: vi.fn() };
+    const client = Object.assign(new EventEmitter(), {
+      query,
+      release: vi.fn(),
+    });
     const pool = { connect: vi.fn().mockResolvedValue(client) };
     return { client, pool: pool as unknown as Pool };
   }
@@ -139,6 +158,28 @@ describe('transaction client lifecycle', () => {
     await expect(inTransaction(pool, async () => {})).rejects.toThrow(
       'pool unavailable',
     );
+  });
+});
+
+describe('checked-out connection failures', () => {
+  it('handles client errors without committing or leaking listeners', async () => {
+    const client = Object.assign(new EventEmitter(), {
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+      release: vi.fn(),
+    });
+    const pool = { connect: async () => client } as unknown as Pool;
+    const failure = new Error('transport disconnected');
+    await expect(
+      inTransaction(pool, async () => {
+        client.emit('error', failure);
+        return 'uncommitted';
+      }),
+    ).rejects.toBe(failure);
+    expect(client.query.mock.calls.map((call) => call[0])).toEqual([
+      'BEGIN ISOLATION LEVEL READ COMMITTED',
+    ]);
+    expect(client.release).toHaveBeenCalledExactlyOnceWith(true);
+    expect(client.listenerCount('error')).toBe(0);
   });
 });
 

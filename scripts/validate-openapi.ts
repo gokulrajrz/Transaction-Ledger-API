@@ -43,7 +43,32 @@ for (const match of reference.matchAll(/\]\(([^)]+)\)/g)) {
 }
 const raw = parse(await readFile('openapi.yaml', 'utf8')) as OpenAPIV3.Document;
 const amountSchema = raw.components?.schemas?.Amount as OpenAPIV3.SchemaObject;
-const moneyPattern = new RegExp(amountSchema.pattern!);
+const moneyPattern = new RegExp(
+  (amountSchema.oneOf![0] as OpenAPIV3.SchemaObject).pattern!,
+);
+for (const value of [
+  50,
+  10.5,
+  0.29,
+  90071992547409.9,
+  Number.MAX_SAFE_INTEGER,
+  0,
+  -1,
+  1.001,
+  1.005,
+  Number.MAX_SAFE_INTEGER + 1,
+]) {
+  let documented = true;
+  try {
+    contract.assertSchema(amountSchema, value, 'Numeric amount');
+  } catch {
+    documented = false;
+  }
+  if (documented !== amount.safeParse(value).success)
+    throw new Error(
+      `OpenAPI numeric monetary validation mismatch for ${value}`,
+    );
+}
 for (const value of [
   '0',
   '0.0',

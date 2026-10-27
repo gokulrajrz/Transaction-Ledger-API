@@ -3,7 +3,7 @@ info:
   title: Confluencr Transaction Ledger API
   version: 1.0.0
   description:
-    Accounts, immutable postings and atomic money transfers. All monetary inputs/outputs are decimal
+    Accounts, immutable postings and atomic money transfers. Monetary inputs accept decimal strings or finite JSON numbers; outputs are decimal
     strings. This assessment implementation has no authentication or authorization. POST operations create
     actual records. Reuse reference_id to reconcile ambiguous outcomes; duplicates return 409 with the
     original resource. See the repository API reference for validation, failure recovery and operational
@@ -162,9 +162,8 @@ paths:
       description:
         Offset pagination with an optional exact type filter. Results sort by created_at DESC, id DESC.
         All query fields are validated before account existence is checked; unknown keys and
-        repeated/malformed parameters are rejected. Filtered counts and page data can observe adjacent READ
-        COMMITTED snapshots during concurrent writes. Existing historical null/blank descriptions are
-        preserved.
+        repeated/malformed parameters are rejected. Filtered counts and page data share one REPEATABLE READ snapshot within each request.
+        Separate page requests can observe newer committed entries.
       parameters:
         - name: type
           in: query
@@ -206,8 +205,6 @@ paths:
                   $ref: '#/components/examples/HistorySecondPage'
                 EmptyHistory:
                   $ref: '#/components/examples/EmptyHistory'
-                LegacyHistory:
-                  $ref: '#/components/examples/LegacyHistory'
         '400':
           $ref: '#/components/responses/Validation'
         '404':
@@ -291,7 +288,7 @@ paths:
       tags:
         - Operations
       operationId: readiness
-      summary: Verify connectivity, required ledger migrations and read access
+      summary: Verify connectivity, schema integrity safeguards and read access
       responses:
         '200':
           description: Database/schema read check succeeded.
@@ -326,14 +323,20 @@ components:
       description: UUID; invalid syntax returns INVALID_ACCOUNT_ID.
   schemas:
     Amount:
-      type: string
-      pattern: ^(?!0(?:\.0{1,2})?$)(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$
+      oneOf:
+        - type: string
+          pattern: ^(?!0(?:\.0{1,2})?$)(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$
+          maxLength: 19
+        - type: number
+          minimum: 0.01
+          maximum: 9007199254740991
+          multipleOf: 0.01
       description:
-        Positive decimal string, at most 9999999999999999.99; zero, negative, exponent notation, numeric
-        JSON values, whitespace and leading zeros are rejected. One or two fractional digits or an integer are
-        accepted.
-      example: '100.50'
-      maxLength: 19
+        Positive decimal string up to 9999999999999999.99, or a finite JSON number no larger than
+        9007199254740991 with at most two fractional digits. Values normalize to decimal strings
+        without rounding. Use strings for large exact values; numeric JSON is parsed as JavaScript
+        floating point. String signs, exponent notation, whitespace and leading zeros are rejected.
+      example: 50
     Balance:
       type: string
       pattern: ^(?:0|[1-9]\d{0,15})\.\d{2}$
@@ -343,7 +346,7 @@ components:
       minLength: 1
       maxLength: 200
       pattern: ^(?=[\s\S]*\S)[^\u0000]+$
-      description: Required nonblank reference. Case and whitespace are preserved exactly; uniqueness is per account.
+      description: Required nonblank reference. Case and whitespace are preserved exactly; uniqueness is per account. Unpaired Unicode surrogates are rejected.
     Account:
       type: object
       required:
@@ -468,9 +471,9 @@ components:
           nullable: true
           maxLength: 2000
           description:
-            'Nonblank on new entries: supplied text or Credit transaction / Debit transaction; transfers use
-            Transfer to <destination name> / Transfer from <source name>. Original historical null/blank
-            values remain immutable and may appear in history or duplicate responses.'
+            'Nonblank immutable description: supplied text or Credit transaction / Debit transaction;
+            transfers use Transfer to <destination name> / Transfer from <source name>. Older installations
+            can retain original null or blank historical descriptions.'
         reference_id:
           $ref: '#/components/schemas/Reference'
         created_at:
@@ -543,7 +546,7 @@ components:
           pattern: ^(?![\s\S]*\u0000)(?=[\s\S]*\S)\s*[\s\S]{1,200}\s*$
           description:
             Required nonblank name. Leading/trailing whitespace is trimmed before the 1–200 character bound
-            is checked. NUL is rejected.
+            is checked. NUL and unpaired Unicode surrogates are rejected.
           example: Alice
     BalanceResponse:
       type: object
@@ -931,10 +934,10 @@ components:
         account_id: 11111111-1111-4111-8111-111111111111
         balance: '100.00'
     CreditInput:
-      summary: Credit with a supplied description
+      summary: Numeric credit with a supplied description
       value:
         type: credit
-        amount: '100.00'
+        amount: 100
         description: Initial deposit
         reference_id: deposit-001
     DebitInput:
@@ -1058,29 +1061,12 @@ components:
           limit: 20
           total_records: 0
           total_pages: 0
-    LegacyHistory:
-      summary: Historical null description preserved
-      value:
-        data:
-          - id: 66666666-6666-4666-8666-666666666666
-            account_id: 11111111-1111-4111-8111-111111111111
-            type: debit
-            amount: '30.00'
-            description: null
-            reference_id: transfer/55555555-5555-4555-8555-555555555555/debit
-            created_at: 2026-10-28T00:03:00.001Z
-            transfer_id: 55555555-5555-4555-8555-555555555555
-        pagination:
-          page: 1
-          limit: 20
-          total_records: 1
-          total_pages: 1
     TransferInput:
       summary: Transfer between distinct existing accounts
       value:
         from_account_id: 11111111-1111-4111-8111-111111111111
         to_account_id: 22222222-2222-4222-8222-222222222222
-        amount: '30.00'
+        amount: 30
         reference_id: transfer-001
     TransferCreated:
       summary: Metadata and linked debit/credit pair

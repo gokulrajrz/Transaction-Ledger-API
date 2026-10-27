@@ -16,6 +16,7 @@ CREATE TABLE ledger.transactions (
     type TEXT NOT NULL CONSTRAINT transactions_type_check CHECK (type IN ('credit', 'debit')),
     amount NUMERIC(18,2) NOT NULL CONSTRAINT transactions_amount_check CHECK (amount > 0 AND amount <> 'NaN'::numeric),
     description TEXT CONSTRAINT transactions_description_check CHECK (length(description) <= 2000),
+    CONSTRAINT transactions_description_required CHECK (description IS NOT NULL AND description ~ '[^[:space:]]'),
     reference_id TEXT NOT NULL CONSTRAINT transactions_reference_check CHECK (length(trim(reference_id)) > 0 AND length(reference_id) <= 200),
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     CONSTRAINT transactions_account_reference_unique UNIQUE (account_id, reference_id)

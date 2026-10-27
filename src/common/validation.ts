@@ -24,15 +24,26 @@ export function validate<T extends z.ZodType>(
 export const accountParams = z.strictObject({
   id: z.uuid().transform((id) => id.toLowerCase()),
 });
-export const amount = z
+const decimalAmount = z
   .string()
   .regex(
     /^(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$/,
     'Expected a decimal string with up to 16 integer digits and 2 decimal places',
   )
   .refine((value) => /[1-9]/.test(value), 'Amount must be greater than zero');
+
+export const amount = z
+  .union([z.string(), z.number().finite().max(Number.MAX_SAFE_INTEGER)])
+  // Validate the number's decimal representation before padding, never round money.
+  .transform((value) => (typeof value === 'number' ? String(value) : value))
+  .pipe(decimalAmount)
+  .transform((value) => {
+    const [whole, fraction = ''] = value.split('.');
+    return `${whole}.${fraction.padEnd(2, '0')}`;
+  });
 export const databaseText = z
   .string()
+  .refine((value) => value.isWellFormed(), 'Text must contain valid Unicode')
   .refine(
     (value) => !value.includes('\u0000'),
     'Text must not contain NUL characters',

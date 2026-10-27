@@ -11,6 +11,7 @@ export async function loadContract() {
     allErrors: true,
     strict: false,
     validateFormats: true,
+    multipleOfPrecision: 8,
   });
   addFormats.default(ajv);
   const cache = new Map<object, ValidateFunction>();

@@ -185,7 +185,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"type\": \"credit\",\n  \"amount\": \"100.00\",\n  \"description\": \"Initial deposit\",\n  \"reference_id\": \"docs-{{run_id}}-deposit\"\n}",
+          "raw": "{\n  \"type\": \"credit\",\n  \"amount\": 100,\n  \"description\": \"Initial deposit\",\n  \"reference_id\": \"docs-{{run_id}}-deposit\"\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -326,7 +326,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"from_account_id\": \"{{source_account_id}}\",\n  \"to_account_id\": \"{{destination_account_id}}\",\n  \"amount\": \"30.00\",\n  \"reference_id\": \"docs-{{run_id}}-transfer\"\n}",
+          "raw": "{\n  \"from_account_id\": \"{{source_account_id}}\",\n  \"to_account_id\": \"{{destination_account_id}}\",\n  \"amount\": 30,\n  \"reference_id\": \"docs-{{run_id}}-transfer\"\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -517,7 +517,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"type\": \"credit\",\n  \"amount\": \"100.00\",\n  \"description\": \"Initial deposit\",\n  \"reference_id\": \"docs-{{run_id}}-deposit\"\n}",
+          "raw": "{\n  \"type\": \"credit\",\n  \"amount\": 100,\n  \"description\": \"Initial deposit\",\n  \"reference_id\": \"docs-{{run_id}}-deposit\"\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -556,7 +556,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"from_account_id\": \"{{source_account_id}}\",\n  \"to_account_id\": \"{{destination_account_id}}\",\n  \"amount\": \"30.00\",\n  \"reference_id\": \"docs-{{run_id}}-transfer\"\n}",
+          "raw": "{\n  \"from_account_id\": \"{{source_account_id}}\",\n  \"to_account_id\": \"{{destination_account_id}}\",\n  \"amount\": 30,\n  \"reference_id\": \"docs-{{run_id}}-transfer\"\n}",
           "options": {
             "raw": {
               "language": "json"

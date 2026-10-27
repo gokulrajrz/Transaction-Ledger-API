@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { buildApp } from '../src/app.js';
 import { checkDatabase } from '../src/db/readiness.js';
+import { getHistory } from '../src/modules/transactions/transaction.service.js';
 import { createTestDatabase } from './setup/database.js';
 
 let fixture: Awaited<ReturnType<typeof createTestDatabase>>;
@@ -32,7 +33,7 @@ async function account(name = 'Test account'): Promise<string> {
 }
 async function post(
   id: string,
-  amount = '10.00',
+  amount: string | number = '10.00',
   type = 'credit',
   reference_id: string = randomUUID(),
 ) {
@@ -58,6 +59,63 @@ async function reconcile(id: string, expected?: string) {
 }
 
 describe('accounts', () => {
+  it.each(['\ud800', '\udfff', 'ref-\ud800'])(
+    'rejects unpaired surrogates in every text field: %j',
+    async (text) => {
+      const id = await account();
+      for (const payload of [
+        { type: 'credit', amount: 1, reference_id: text },
+        {
+          type: 'credit',
+          amount: 1,
+          reference_id: 'valid-reference',
+          description: text,
+        },
+      ]) {
+        expect(
+          (
+            await app.inject({
+              method: 'POST',
+              url: `/accounts/${id}/transactions`,
+              payload,
+            })
+          ).statusCode,
+        ).toBe(400);
+      }
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/accounts',
+            payload: { name: text },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/transfers',
+            payload: {
+              from_account_id: id,
+              to_account_id: await account(),
+              amount: 1,
+              reference_id: text,
+            },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect((await post(id, 1, 'credit', 'ref-\ufffd')).statusCode).toBe(201);
+      await reconcile(id, '1.00');
+    },
+  );
+  it('preserves valid surrogate pairs in immutable references', async () => {
+    const id = await account('Account 😀');
+    const response = await post(id, 1, 'credit', 'reference-😀');
+    expect(response.statusCode).toBe(201);
+    expect(response.json().reference_id).toBe('reference-😀');
+    await reconcile(id, '1.00');
+  });
   it.each(['name', 'reference_id', 'description', 'transfer_reference'])(
     'rejects NUL in %s as invalid input without financial changes',
     async (field) => {
@@ -166,6 +224,20 @@ describe('accounts', () => {
 });
 
 describe('postings and exact balances', () => {
+  it('accepts numeric credits and debits, returns strings, and preserves duplicate identity', async () => {
+    const id = await account();
+    const credit = await post(id, 50, 'credit', 'numeric-credit');
+    expect(credit.statusCode).toBe(201);
+    expect(credit.json().amount).toBe('50.00');
+    expect(
+      (await post(id, '50.00', 'credit', 'numeric-credit')).statusCode,
+    ).toBe(409);
+    const debit = await post(id, 10.5, 'debit');
+    expect(debit.statusCode).toBe(201);
+    expect(debit.json().amount).toBe('10.50');
+    expect((await post(id, 0.001)).statusCode).toBe(400);
+    await reconcile(id, '39.50');
+  });
   it('returns every assessed transaction field with unique generated IDs and system timestamps', async () => {
     const id = await account();
     const before = Date.now();
@@ -345,7 +417,7 @@ describe('postings and exact balances', () => {
   });
   it.each([
     { type: 'other', amount: '1', reference_id: 'a' },
-    { type: 'credit', amount: 1, reference_id: 'a' },
+    { type: 'credit', amount: 1.001, reference_id: 'a' },
     { type: 'credit', amount: '1' },
     { type: 'credit', amount: '1', reference_id: ' ' },
     {
@@ -450,6 +522,48 @@ describe('postings and exact balances', () => {
 });
 
 describe('history', () => {
+  it('keeps count and page on one snapshot when a posting commits between reads', async () => {
+    const id = await account();
+    await post(id, 1, 'credit', 'before-snapshot');
+    const boundaryPool = new Proxy(pool, {
+      get(target, property) {
+        if (property === 'connect')
+          return async () => {
+            const client = await target.connect();
+            return new Proxy(client, {
+              get(connection, key) {
+                if (key === 'query')
+                  return async (sql: string, values?: unknown[]) => {
+                    const result = await connection.query(sql, values);
+                    if (sql.startsWith('SELECT count(*)')) {
+                      expect(
+                        (await post(id, 1, 'credit', 'after-snapshot'))
+                          .statusCode,
+                      ).toBe(201);
+                    }
+                    return result;
+                  };
+                const value: unknown = Reflect.get(connection, key);
+                return typeof value === 'function'
+                  ? value.bind(connection)
+                  : value;
+              },
+            });
+          };
+        return Reflect.get(target, property);
+      },
+    });
+    const history = await getHistory(boundaryPool, id, { page: 1, limit: 20 });
+    expect(history.pagination.total_records).toBe(1);
+    expect(history.data.map((row) => row.reference_id)).toEqual([
+      'before-snapshot',
+    ]);
+    expect(
+      (await app.inject(`/accounts/${id}/transactions`)).json().pagination
+        .total_records,
+    ).toBe(2);
+    await reconcile(id, '2.00');
+  });
   it('handles empty histories and default pagination', async () => {
     const id = await account();
     expect((await app.inject(`/accounts/${id}/transactions`)).json()).toEqual({
@@ -597,7 +711,7 @@ describe('atomic transfers', () => {
   async function transfer(
     from: string,
     to: string,
-    amount = '30',
+    amount: string | number = '30',
     reference_id: string = randomUUID(),
   ) {
     return app.inject({
@@ -650,6 +764,22 @@ describe('atomic transfers', () => {
     await expect(
       pool.query('DELETE FROM ledger.transfers WHERE id=$1', [result.id]),
     ).rejects.toMatchObject({ code: '55000' });
+  });
+  it('accepts numeric transfer amounts and normalizes both ledger entries', async () => {
+    const from = await account();
+    const to = await account();
+    await post(from, 50);
+    const response = await transfer(from, to, 10.5, 'numeric-transfer');
+    expect(response.statusCode).toBe(201);
+    expect(response.json().amount).toBe('10.50');
+    expect(
+      response.json().transactions.map((row: { amount: string }) => row.amount),
+    ).toEqual(['10.50', '10.50']);
+    expect(
+      (await transfer(from, to, '10.50', 'numeric-transfer')).statusCode,
+    ).toBe(409);
+    await reconcile(from, '39.50');
+    await reconcile(to, '10.50');
   });
   it('rejects same-account transfer including differently cased UUIDs', async () => {
     const id = await account();
@@ -794,7 +924,7 @@ describe('atomic transfers', () => {
     };
     for (const override of [
       { from_account_id: 'bad' },
-      { amount: 1 },
+      { amount: 1.001 },
       { amount: '0' },
       { amount: '1.001' },
       { reference_id: '' },
@@ -811,6 +941,64 @@ describe('atomic transfers', () => {
 });
 
 describe('database integrity and rollback', () => {
+  it('preserves legacy descriptions while checking enforcement for new rows', async () => {
+    const legacy = await createTestDatabase();
+    const legacyApp = buildApp(legacy.pool, { closePool: false });
+    try {
+      await legacy.pool.query(
+        'ALTER TABLE ledger.transactions DROP CONSTRAINT transactions_description_required',
+      );
+      const account = (
+        await legacy.pool.query(
+          "INSERT INTO ledger.accounts (name) VALUES ('Legacy fixture') RETURNING id",
+        )
+      ).rows[0];
+      const original = (
+        await legacy.pool.query(
+          "INSERT INTO ledger.transactions (account_id,type,amount,reference_id) VALUES ($1,'credit',1,'legacy-description') RETURNING *",
+          [account.id],
+        )
+      ).rows[0];
+      await legacy.pool.query(
+        'UPDATE ledger.accounts SET balance=1 WHERE id=$1',
+        [account.id],
+      );
+      await legacy.pool.query(
+        "ALTER TABLE ledger.transactions ADD CONSTRAINT transactions_description_required CHECK (description IS NOT NULL AND description ~ '[^[:space:]]') NOT VALID",
+      );
+      expect((await legacyApp.inject('/ready')).statusCode).toBe(200);
+      await expect(
+        legacy.pool.query(
+          "INSERT INTO ledger.transactions (account_id,type,amount,reference_id) VALUES ($1,'credit',1,'invalid-new-row')",
+          [account.id],
+        ),
+      ).rejects.toMatchObject({ code: '23514' });
+      const posted = await legacyApp.inject({
+        method: 'POST',
+        url: `/accounts/${account.id}/transactions`,
+        payload: { type: 'credit', amount: 1, reference_id: 'new-description' },
+      });
+      expect(posted.statusCode).toBe(201);
+      expect(posted.json().description).toBe('Credit transaction');
+      expect(
+        (
+          await legacy.pool.query(
+            'SELECT * FROM ledger.transactions WHERE id=$1',
+            [original.id],
+          )
+        ).rows[0],
+      ).toEqual(original);
+      expect(
+        (await legacyApp.inject(`/accounts/${account.id}/transactions`))
+          .json()
+          .data.find((row: { id: string }) => row.id === original.id)
+          .description,
+      ).toBeNull();
+    } finally {
+      await legacyApp.close();
+      await legacy.stop();
+    }
+  });
   it.each([null, '', ' \n\t'])(
     'requires a nonblank description on future SQL inserts: %s',
     async (description) => {
@@ -827,87 +1015,35 @@ describe('database integrity and rollback', () => {
       await reconcile(id, '0.00');
     },
   );
-  it('adds the description requirement without rewriting legacy immutable transactions', async () => {
-    const legacy = await createTestDatabase({ migrate: false });
-    let legacyApp: FastifyInstance | undefined;
+  it('fails readiness when the description constraint is missing', async () => {
+    await pool.query(
+      'ALTER TABLE ledger.transactions DROP CONSTRAINT transactions_description_required',
+    );
     try {
-      const migration = '20261028000300_require_transaction_descriptions.sql';
-      const prior = (await readdir('supabase/migrations'))
-        .filter((file) => file.endsWith('.sql') && file < migration)
-        .sort();
-      for (const file of prior)
-        await legacy.pool.query(
-          await readFile(`supabase/migrations/${file}`, 'utf8'),
-        );
-      const client = await legacy.pool.connect();
-      let original;
-      let id: string;
-      try {
-        await client.query('BEGIN');
-        const created = await client.query(
-          "INSERT INTO ledger.accounts (name) VALUES ('Legacy account') RETURNING id",
-        );
-        id = created.rows[0].id;
-        original = (
-          await client.query(
-            "INSERT INTO ledger.transactions (account_id,type,amount,reference_id) VALUES ($1,'credit',1,'legacy-null-description') RETURNING *",
-            [id],
-          )
-        ).rows[0];
-        await client.query('UPDATE ledger.accounts SET balance=1 WHERE id=$1', [
-          id,
-        ]);
-        await client.query('COMMIT');
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-      expect(original.description).toBeNull();
-      await legacy.pool.query(
-        await readFile(`supabase/migrations/${migration}`, 'utf8'),
+      await expect(checkDatabase(pool)).rejects.toThrow(
+        'Ledger integrity safeguards are missing',
       );
-      expect(
-        (
-          await legacy.pool.query(
-            'SELECT * FROM ledger.transactions WHERE id=$1',
-            [original.id],
-          )
-        ).rows[0],
-      ).toEqual(original);
-      await expect(
-        legacy.pool.query(
-          "UPDATE ledger.transactions SET description='Backfilled' WHERE id=$1",
-          [original.id],
-        ),
-      ).rejects.toMatchObject({ code: '55000' });
-      legacyApp = buildApp(legacy.pool, { closePool: false });
-      const response = await legacyApp.inject({
-        method: 'POST',
-        url: `/accounts/${id}/transactions`,
-        payload: {
-          type: 'credit',
-          amount: '1',
-          reference_id: 'new-generated-description',
-        },
-      });
-      expect(response.statusCode).toBe(201);
-      expect(response.json().description).toBe('Credit transaction');
-      expect(
-        (await legacyApp.inject(`/accounts/${id}/balance`)).json().balance,
-      ).toBe('2.00');
-      const history = (
-        await legacyApp.inject(`/accounts/${id}/transactions`)
-      ).json().data;
-      expect(
-        history.find((row: { id: string }) => row.id === original.id)
-          .description,
-      ).toBeNull();
+      expect((await app.inject('/ready')).statusCode).toBe(503);
+      expect((await app.inject('/health')).statusCode).toBe(200);
     } finally {
-      if (legacyApp) await legacyApp.close();
-      await legacy.stop();
+      await pool.query(
+        "ALTER TABLE ledger.transactions ADD CONSTRAINT transactions_description_required CHECK (description IS NOT NULL AND description ~ '[^[:space:]]')",
+      );
     }
+    expect((await app.inject('/ready')).statusCode).toBe(200);
+  });
+  it('fails readiness when ledger immutability is disabled', async () => {
+    await pool.query(
+      'ALTER TABLE ledger.transactions DISABLE TRIGGER transactions_immutable',
+    );
+    try {
+      expect((await app.inject('/ready')).statusCode).toBe(503);
+    } finally {
+      await pool.query(
+        'ALTER TABLE ledger.transactions ENABLE TRIGGER transactions_immutable',
+      );
+    }
+    expect((await app.inject('/ready')).statusCode).toBe(200);
   });
   it('fails readiness when a required migration column is missing', async () => {
     await pool.query(
