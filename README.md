@@ -31,8 +31,10 @@ Prerequisites: Node.js **24** and npm, plus a supported Linux/macOS/Windows plat
 ```bash
 git clone https://github.com/gokulrajrz/Transaction-Ledger-API.git
 cd Transaction-Ledger-API
+nvm install                # installs the Node version in .nvmrc; requires nvm
 nvm use                    # or install/use Node 24 with your preferred manager
 npm ci
+npm run verify             # all checks; starts and cleans up its own test databases
 npm run dev:local
 ```
 
@@ -62,11 +64,55 @@ npx supabase migration up --local
 
 If you previously started only PostgreSQL with `npx supabase db start`, the CLI may detect the running database and skip starting Studio. Stop this project's services with `npx supabase stop --project-id confluencr-ledger-api`, then run `npm run supabase:start`. The normal stop command retains database storage; the restart briefly interrupts database connections.
 
-The Fastify API uses the `DATABASE_URL` in `.env` to connect. Before the first API start, configure a separate `ledger_runtime` login and apply [docs/runtime-grants.sql](docs/runtime-grants.sql); keep its real password only in the ignored `.env`. In this workspace the local setup includes that restricted role and `.env` configuration. Then start the API:
+The following steps are for a **fresh local project**, after the migrations above have completed. Reuse an existing `ledger_runtime` login and `.env` when restarting an already configured project.
+
+Open an administrator SQL session inside this project's database container:
+
+```bash
+docker exec -it supabase_db_confluencr-ledger-api psql -X -U postgres -d postgres
+```
+
+At the `psql` prompt, create the runtime login and set its password interactively. The password prompt does not put the secret into the SQL command or shell history. Skip `CREATE ROLE` if this project already has that login.
+
+```sql
+CREATE ROLE ledger_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+\password ledger_runtime
+\q
+```
+
+Back in the repository terminal, apply the restricted runtime grants:
+
+```bash
+docker exec -i supabase_db_confluencr-ledger-api \
+  psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres < docs/runtime-grants.sql
+```
+
+On a fresh clone, create the API's environment file. Skip the copy if `.env` already exists so you retain its settings:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and replace its `DATABASE_URL` placeholder with the local runtime connection URL, using the password you just set:
+
+```dotenv
+DATABASE_URL=postgresql://ledger_runtime:YOUR_PERCENT_ENCODED_PASSWORD@127.0.0.1:54362/postgres
+```
+
+Percent-encode reserved characters in the password when putting it in a URL. Keep the real password only in the ignored `.env`; it is not included in the repository. Start the API:
 
 ```bash
 npm run dev
 ```
+
+In another terminal, check both endpoints. They should return `{"status":"ok"}` and `{"status":"ready"}` with HTTP 200:
+
+```bash
+curl -i http://127.0.0.1:3000/health
+curl -i http://127.0.0.1:3000/ready
+```
+
+Then open [Swagger UI](http://127.0.0.1:3000/docs/) or run the imported Postman collection as described above. The collection should finish with Alice at **50.00** and Bob at **80.00**. Automated verification remains independent of this persistent database: run `npm run verify` from the repository; no running API or `.env` is required for the default test path.
 
 The database is independent of the API process, so stopping `npm run dev` preserves the database and its data. If `dev:local` is running on port 3000, stop that demo before starting `npm run dev`.
 
