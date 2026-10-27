@@ -6,4 +6,5 @@ coverage/
 !.env.example
 *.log
 supabase/.temp/
+supabase/.branches/
 .postgres/

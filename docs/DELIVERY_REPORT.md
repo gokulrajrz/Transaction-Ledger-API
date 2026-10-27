@@ -45,6 +45,10 @@ Fastify routes parse strict Zod schemas before database access. Small services i
 
 ## 4. Supabase integration
 
+Subsequent local setup requested by the user: a dedicated Supabase PostgreSQL **17.11** Docker service, `supabase_db_confluencr-ledger-api`, is running on **127.0.0.1:54362**. The default 54322 port belonged to another project, so this project's configuration uses 54362 (database), 54360 (shadow database) and 54361 (Supabase API configuration). Both migrations were applied by `supabase db start`; `supabase migration up --local` then confirmed no migrations were pending.
+
+The ignored `.env` now uses a dedicated `ledger_runtime` login with a generated password. The role has no superuser, database-creation, role-creation or RLS-bypass privileges. Supabase `anon`, `authenticated` and `service_role` roles were checked and have no USAGE on `ledger`. Live verification through the runtime login covered credits, debits, linked transfers, money conservation, ledger reconciliation, and an API HTTP `/ready` response of 200. All verification writes were rolled back. This is a persistent local Supabase database independent of API process lifetime; it does not verify hosted Supabase networking or TLS.
+
 - The schema is private `ledger`, outside default public Data API exposure. Source-controlled SQL migrations create accounts, transactions, transfers, FKs, checks, uniqueness, history/destination indexes and immutability triggers.
 - Official project dependency: Supabase CLI 2.122.0. `db push --dry-run` and `db push` both succeeded against a freshly created local disposable database. Both migration versions were checked in `supabase_migrations.schema_migrations`.
 - Runtime-role SQL grants are provided and verified: permitted operations work; system-field inserts, ledger mutation, TRUNCATE and DDL are denied. Database owner/admin access remains trusted.
@@ -124,7 +128,7 @@ All changes were revalidated after fixes. A TypeScript test-helper annotation an
 
 Hosted database networking/TLS/grants/migrations are unverified. Authentication/authorization are excluded. Privileged owners can alter protections. History uses offset pagination and separate count/page snapshots. Commit network failures can have unknown outcomes; references must be reused to reconcile. No deployment was performed. Default PostgreSQL demo/test launch requires a non-root user and supported native platform. The development watcher smoke is verified on Linux/POSIX; Windows runtime verification covers the compiled server only.
 
-No real credentials were supplied or added. A static scan found no private keys or recognizable secret-token patterns in deliverable files; this is a scoped review, not a guarantee against every secret format. `.env` is ignored and the example contains placeholders. The original `.git` location is an empty, read-only environment mount. At the user's subsequent request, Git publication uses an isolated clone of `https://github.com/gokulrajrz/Transaction-Ledger-API.git`; the remote was empty when inspected, so there was no prior history to audit or overwrite.
+No credentials were committed. Generated local Supabase credentials are stored only in the ignored `.env`; the example contains placeholders. A static scan found no private keys or recognizable secret-token patterns in deliverable files; this is a scoped review, not a guarantee against every secret format. The original `.git` location was exposed as an empty, read-only environment mount. Initial Git publication used an isolated clone of `https://github.com/gokulrajrz/Transaction-Ledger-API.git`; the remote was empty when inspected, so there was no prior history to audit or overwrite. The current workspace was subsequently connected directly to `origin/main` using elevated Git access.
 
 ## 10. Submission instructions
 

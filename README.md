@@ -30,7 +30,27 @@ curl -X POST http://127.0.0.1:3000/accounts \
 
 Copy the returned account UUID for the examples below. For durable storage, configure Supabase or another dedicated PostgreSQL database as described next.
 
-## Supabase and persistent database setup
+## Local Supabase database with persistent storage
+
+Docker must be running. This project uses PostgreSQL port **54362**, Supabase API port 54361 and shadow-database port 54360 to avoid collisions with other local Supabase projects.
+
+```bash
+nvm use
+npx supabase db start
+npx supabase migration up --local
+```
+
+`db start` starts the database service; the API uses the `DATABASE_URL` in `.env` to connect. Before the first API start, configure a separate `ledger_runtime` login and apply [docs/runtime-grants.sql](docs/runtime-grants.sql); keep its real password only in the ignored `.env`. In this workspace the local setup includes that restricted role and `.env` configuration. Then start the API:
+
+```bash
+npm run dev
+```
+
+The database is independent of the API process, so stopping `npm run dev` preserves the database and its data. If `dev:local` is running on port 3000, stop that demo before starting `npm run dev`.
+
+The local Supabase database uses Docker storage. Stop it without deleting storage using `npx supabase stop`; do not use reset or no-backup options to stop it. `db start` starts only PostgreSQL; Studio and the other Supabase services are not started by that command.
+
+## Hosted Supabase setup
 
 1. Create/select a **development-only** Supabase project. Inspect existing schemas and migration history first. Never reset a shared/production database.
 2. In the Supabase Dashboard **Connect** panel, copy the actual PostgreSQL URL. Use direct port **5432** when IPv6 works; otherwise use the **session pooler on port 5432** for IPv4. The backend is a persistent service; transaction pooling is unnecessary here. Do not use a Supabase API/service-role key as the database password.

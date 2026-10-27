@@ -2,14 +2,14 @@ project_id = "confluencr-ledger-api"
 
 [api]
 enabled = true
-port = 54321
+port = 54361
 schemas = ["public", "graphql_public"]
 extra_search_path = ["public", "extensions"]
 max_rows = 1000
 
 [db]
-port = 54322
-shadow_port = 54320
+port = 54362
+shadow_port = 54360
 major_version = 17
 
 [db.migrations]
