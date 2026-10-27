@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
@@ -166,6 +166,132 @@ describe('accounts', () => {
 });
 
 describe('postings and exact balances', () => {
+  it('returns every assessed transaction field with unique generated IDs and system timestamps', async () => {
+    const id = await account();
+    const before = Date.now();
+    const description = "Invoice payment: O'Reilly; -- retained as text";
+    const response = await app.inject({
+      method: 'POST',
+      url: `/accounts/${id}/transactions`,
+      payload: {
+        type: 'credit',
+        amount: '10.50',
+        reference_id: 'complete-record',
+        description,
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    const entry = response.json();
+    expect(entry).toEqual({
+      id: expect.stringMatching(
+        /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+      ),
+      account_id: id,
+      type: 'credit',
+      amount: '10.50',
+      description,
+      reference_id: 'complete-record',
+      created_at: expect.any(String),
+      transfer_id: null,
+    });
+    expect(Date.parse(entry.created_at)).toBeGreaterThanOrEqual(before - 1000);
+    expect(Date.parse(entry.created_at)).toBeLessThanOrEqual(Date.now() + 1000);
+    const second = await post(id, '0.50');
+    expect(second.statusCode).toBe(201);
+    expect(second.json().id).not.toBe(entry.id);
+    for (const [field, value] of [
+      ['id', randomUUID()],
+      ['account_id', randomUUID()],
+      ['created_at', '2000-01-01T00:00:00Z'],
+      ['transfer_id', randomUUID()],
+    ]) {
+      const rejected = await app.inject({
+        method: 'POST',
+        url: `/accounts/${id}/transactions`,
+        payload: {
+          type: 'credit',
+          amount: '1',
+          reference_id: `forbidden-${field}`,
+          [field!]: value,
+        },
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json().error.code).toBe('VALIDATION_ERROR');
+    }
+    const history = (await app.inject(`/accounts/${id}/transactions`)).json();
+    expect(history.pagination.total_records).toBe(2);
+    expect(history.data).toContainEqual(entry);
+    await reconcile(id, '11.00');
+  });
+  it('uses the same sanitized error envelope for all assessed HTTP failure categories', async () => {
+    const id = await account();
+    await post(id, '10', 'credit', 'error-envelope-reference');
+    const responses = [
+      [
+        await app.inject(`/accounts/${randomUUID()}/balance`),
+        404,
+        'ACCOUNT_NOT_FOUND',
+      ],
+      [
+        await app.inject('/accounts/invalid/balance'),
+        400,
+        'INVALID_ACCOUNT_ID',
+      ],
+      [await post(id, '1', 'invalid'), 400, 'VALIDATION_ERROR'],
+      [await post(id, '0'), 400, 'VALIDATION_ERROR'],
+      [
+        await app.inject({
+          method: 'POST',
+          url: `/accounts/${id}/transactions`,
+          payload: { type: 'credit', amount: '1' },
+        }),
+        400,
+        'VALIDATION_ERROR',
+      ],
+      [
+        await app.inject(`/accounts/${id}/transactions?page=0`),
+        400,
+        'INVALID_PAGINATION',
+      ],
+      [await post(id, '11', 'debit'), 422, 'INSUFFICIENT_BALANCE'],
+      [
+        await post(id, '1', 'credit', 'error-envelope-reference'),
+        409,
+        'DUPLICATE_TRANSACTION',
+      ],
+      [
+        await app.inject({
+          method: 'POST',
+          url: '/accounts',
+          headers: { 'content-type': 'application/json' },
+          payload: '{broken-json',
+        }),
+        400,
+        'VALIDATION_ERROR',
+      ],
+      [
+        await app.inject({ method: 'POST', url: '/accounts', payload: [] }),
+        400,
+        'VALIDATION_ERROR',
+      ],
+    ] as const;
+    for (const [response, status, code] of responses) {
+      expect(response.statusCode).toBe(status);
+      expect(response.headers['content-type']).toContain('application/json');
+      expect(response.json()).toEqual({
+        error: {
+          code,
+          message: expect.any(String),
+          details: expect.any(Array),
+        },
+      });
+      expect(response.json().error.message.length).toBeGreaterThan(0);
+      expect(response.body).not.toMatch(
+        /password|stack|node_modules|postgresql:\/\//i,
+      );
+    }
+    await reconcile(id, '10.00');
+  });
   it('executes the mandatory 100 + 50 - 30 - 20 sequence and reconciles', async () => {
     const id = await account();
     for (const [amount, type] of [
@@ -225,6 +351,12 @@ describe('postings and exact balances', () => {
     {
       type: 'credit',
       amount: '1',
+      reference_id: 'null-description',
+      description: null,
+    },
+    {
+      type: 'credit',
+      amount: '1',
       reference_id: 'a',
       account_id: randomUUID(),
     },
@@ -263,7 +395,7 @@ describe('postings and exact balances', () => {
     expect((await post(id, '1', 'credit', ' ref ')).statusCode).toBe(409);
     await reconcile(id, '3.00');
   });
-  it('allows descriptions to be omitted and rejects mutation routes', async () => {
+  it('generates an omitted description and rejects mutation routes', async () => {
     const id = await account();
     const response = await app.inject({
       method: 'POST',
@@ -271,7 +403,7 @@ describe('postings and exact balances', () => {
       payload: { type: 'credit', amount: '1', reference_id: 'no-description' },
     });
     expect(response.statusCode).toBe(201);
-    expect(response.json().description).toBeNull();
+    expect(response.json().description).toBe('Credit transaction');
     for (const method of ['PUT', 'PATCH', 'DELETE'] as const)
       expect(
         (
@@ -282,6 +414,39 @@ describe('postings and exact balances', () => {
         ).statusCode,
       ).toBe(404);
   });
+  it.each([
+    ['credit', undefined, 'Credit transaction'],
+    ['credit', '', 'Credit transaction'],
+    ['credit', ' \n\t', 'Credit transaction'],
+    ['debit', undefined, 'Debit transaction'],
+    ['debit', '', 'Debit transaction'],
+    ['debit', ' \n\t', 'Debit transaction'],
+  ] as const)(
+    'generates a description for %s with missing or blank input %s',
+    async (type, description, expected) => {
+      const id = await account();
+      if (type === 'debit') await post(id, '10');
+      const response = await app.inject({
+        method: 'POST',
+        url: `/accounts/${id}/transactions`,
+        payload: {
+          type,
+          amount: '1',
+          reference_id: 'generated-description',
+          ...(description === undefined ? {} : { description }),
+        },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json().description).toBe(expected);
+      const history = (await app.inject(`/accounts/${id}/transactions`)).json();
+      expect(
+        history.data.find(
+          (row: { id: string }) => row.id === response.json().id,
+        ).description,
+      ).toBe(expected);
+      await reconcile(id, type === 'credit' ? '1.00' : '9.00');
+    },
+  );
 });
 
 describe('history', () => {
@@ -302,7 +467,7 @@ describe('history', () => {
     // Direct fixture inserts set equal timestamps to exercise the secondary key without mutating immutable rows.
     for (let i = 0; i < ids.length; i++)
       await pool.query(
-        `INSERT INTO ledger.transactions (id,account_id,type,amount,reference_id,created_at) VALUES ($1,$2,$3,1,$4,'2025-01-01T00:00:00Z')`,
+        `INSERT INTO ledger.transactions (id,account_id,type,amount,reference_id,description,created_at) VALUES ($1,$2,$3,1,$4,'Ordering fixture','2025-01-01T00:00:00Z')`,
         [ids[i], id, i === 1 ? 'debit' : 'credit', `tie-${i}`],
       );
     await pool.query('UPDATE ledger.accounts SET balance = 1 WHERE id = $1', [
@@ -447,8 +612,8 @@ describe('atomic transfers', () => {
     });
   }
   it('posts two linked rows and conserves money', async () => {
-    const from = await account();
-    const to = await account();
+    const from = await account('Alice');
+    const to = await account('Bob');
     await post(from, '100');
     await post(to, '50');
     const response = await transfer(from, to);
@@ -465,6 +630,16 @@ describe('atomic transfers', () => {
     ).toEqual(['debit', 'credit']);
     for (const row of result.transactions)
       expect(row.transfer_id).toBe(result.id);
+    expect(result.transactions[0].description).toBe('Transfer to Bob');
+    expect(result.transactions[1].description).toBe('Transfer from Alice');
+    expect(
+      (await app.inject(`/accounts/${from}/transactions`)).json().data[0]
+        .description,
+    ).toBe('Transfer to Bob');
+    expect(
+      (await app.inject(`/accounts/${to}/transactions`)).json().data[0]
+        .description,
+    ).toBe('Transfer from Alice');
     await reconcile(from, '70.00');
     await reconcile(to, '80.00');
     const total = await pool.query(
@@ -636,6 +811,104 @@ describe('atomic transfers', () => {
 });
 
 describe('database integrity and rollback', () => {
+  it.each([null, '', ' \n\t'])(
+    'requires a nonblank description on future SQL inserts: %s',
+    async (description) => {
+      const id = await account();
+      await expect(
+        pool.query(
+          "INSERT INTO ledger.transactions (account_id,type,amount,reference_id,description) VALUES ($1,'credit',1,'missing-description',$2)",
+          [id, description],
+        ),
+      ).rejects.toMatchObject({
+        code: '23514',
+        constraint: 'transactions_description_required',
+      });
+      await reconcile(id, '0.00');
+    },
+  );
+  it('adds the description requirement without rewriting legacy immutable transactions', async () => {
+    const legacy = await createTestDatabase({ migrate: false });
+    let legacyApp: FastifyInstance | undefined;
+    try {
+      const migration = '20261028000300_require_transaction_descriptions.sql';
+      const prior = (await readdir('supabase/migrations'))
+        .filter((file) => file.endsWith('.sql') && file < migration)
+        .sort();
+      for (const file of prior)
+        await legacy.pool.query(
+          await readFile(`supabase/migrations/${file}`, 'utf8'),
+        );
+      const client = await legacy.pool.connect();
+      let original;
+      let id: string;
+      try {
+        await client.query('BEGIN');
+        const created = await client.query(
+          "INSERT INTO ledger.accounts (name) VALUES ('Legacy account') RETURNING id",
+        );
+        id = created.rows[0].id;
+        original = (
+          await client.query(
+            "INSERT INTO ledger.transactions (account_id,type,amount,reference_id) VALUES ($1,'credit',1,'legacy-null-description') RETURNING *",
+            [id],
+          )
+        ).rows[0];
+        await client.query('UPDATE ledger.accounts SET balance=1 WHERE id=$1', [
+          id,
+        ]);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+      expect(original.description).toBeNull();
+      await legacy.pool.query(
+        await readFile(`supabase/migrations/${migration}`, 'utf8'),
+      );
+      expect(
+        (
+          await legacy.pool.query(
+            'SELECT * FROM ledger.transactions WHERE id=$1',
+            [original.id],
+          )
+        ).rows[0],
+      ).toEqual(original);
+      await expect(
+        legacy.pool.query(
+          "UPDATE ledger.transactions SET description='Backfilled' WHERE id=$1",
+          [original.id],
+        ),
+      ).rejects.toMatchObject({ code: '55000' });
+      legacyApp = buildApp(legacy.pool, { closePool: false });
+      const response = await legacyApp.inject({
+        method: 'POST',
+        url: `/accounts/${id}/transactions`,
+        payload: {
+          type: 'credit',
+          amount: '1',
+          reference_id: 'new-generated-description',
+        },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json().description).toBe('Credit transaction');
+      expect(
+        (await legacyApp.inject(`/accounts/${id}/balance`)).json().balance,
+      ).toBe('2.00');
+      const history = (
+        await legacyApp.inject(`/accounts/${id}/transactions`)
+      ).json().data;
+      expect(
+        history.find((row: { id: string }) => row.id === original.id)
+          .description,
+      ).toBeNull();
+    } finally {
+      if (legacyApp) await legacyApp.close();
+      await legacy.stop();
+    }
+  });
   it('fails readiness when a required migration column is missing', async () => {
     await pool.query(
       'ALTER TABLE ledger.transactions RENAME COLUMN transfer_id TO unavailable_transfer_id',
@@ -661,6 +934,9 @@ describe('database integrity and rollback', () => {
     try {
       await client.query('BEGIN');
       await client.query(`CREATE ROLE "${role}" NOLOGIN`);
+      // PostgreSQL 16+ CREATEROLE logins do not automatically receive SET access
+      // to roles they create. Give the test administrator only that access.
+      await client.query(`GRANT "${role}" TO CURRENT_USER WITH SET TRUE`);
       const grants = (
         await readFile('docs/runtime-grants.sql', 'utf8')
       ).replaceAll('ledger_runtime', `"${role}"`);
@@ -675,7 +951,7 @@ describe('database integrity and rollback', () => {
         [id],
       );
       await client.query(
-        "INSERT INTO ledger.transactions (account_id,type,amount,reference_id) VALUES ($1,'credit',10,'runtime')",
+        "INSERT INTO ledger.transactions (account_id,type,amount,reference_id,description) VALUES ($1,'credit',10,'runtime','Runtime permission fixture')",
         [id],
       );
       await client.query(
@@ -761,7 +1037,7 @@ describe('database integrity and rollback', () => {
     ]) {
       await expect(
         pool.query(
-          'INSERT INTO ledger.transactions (account_id,type,amount,reference_id) VALUES ($1,$2,$3,$4)',
+          "INSERT INTO ledger.transactions (account_id,type,amount,reference_id,description) VALUES ($1,$2,$3,$4,'Constraint fixture')",
           [accountId, type, amount, ref],
         ),
       ).rejects.toMatchObject({ code });
@@ -774,12 +1050,22 @@ describe('database integrity and rollback', () => {
   it('rejects UPDATE and DELETE even through direct SQL', async () => {
     const id = await account();
     const entry = (await post(id)).json();
-    await expect(
-      pool.query(
-        "UPDATE ledger.transactions SET description='changed' WHERE id=$1",
-        [entry.id],
-      ),
-    ).rejects.toMatchObject({ code: '55000' });
+    const other = await account();
+    for (const [assignment, value] of [
+      ['type=$2', 'debit'],
+      ['amount=$2', '999.99'],
+      ['description=$2', 'changed'],
+      ['reference_id=$2', 'changed-reference'],
+      ['account_id=$2', other],
+      ['created_at=$2', '2000-01-01T00:00:00Z'],
+    ]) {
+      await expect(
+        pool.query(`UPDATE ledger.transactions SET ${assignment} WHERE id=$1`, [
+          entry.id,
+          value,
+        ]),
+      ).rejects.toMatchObject({ code: '55000' });
+    }
     await expect(
       pool.query('DELETE FROM ledger.transactions WHERE id=$1', [entry.id]),
     ).rejects.toMatchObject({ code: '55000' });
@@ -787,6 +1073,33 @@ describe('database integrity and rollback', () => {
       (await app.inject(`/accounts/${id}/transactions`)).json().data,
     ).toEqual([entry]);
     await reconcile(id, '10.00');
+  });
+  it('preserves balance and ledger when the ledger insertion itself fails', async () => {
+    const id = await account();
+    await post(id, '10');
+    await pool.query(`CREATE FUNCTION ledger.test_reject_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      IF NEW.reference_id = 'forced-entry-insert' THEN RAISE EXCEPTION 'injected insertion failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER test_reject_insert BEFORE INSERT ON ledger.transactions FOR EACH ROW EXECUTE FUNCTION ledger.test_reject_insert()`);
+    try {
+      const response = await post(id, '5', 'credit', 'forced-entry-insert');
+      expect(response.statusCode).toBe(500);
+      expect(response.json().error.code).toBe('DATABASE_ERROR');
+      expect(response.body).not.toContain('injected insertion failure');
+      await reconcile(id, '10.00');
+      expect(
+        (await app.inject(`/accounts/${id}/transactions`)).json().pagination
+          .total_records,
+      ).toBe(1);
+    } finally {
+      await pool.query(
+        'DROP TRIGGER test_reject_insert ON ledger.transactions; DROP FUNCTION ledger.test_reject_insert()',
+      );
+    }
+    expect(
+      (await post(id, '5', 'credit', 'forced-entry-insert')).statusCode,
+    ).toBe(201);
+    await reconcile(id, '15.00');
+    expect(pool.waitingCount).toBe(0);
   });
   it('rolls back the inserted ledger row when balance numeric overflows', async () => {
     const id = await account();
@@ -828,7 +1141,7 @@ describe('database integrity and rollback', () => {
     expect(pool.waitingCount).toBe(0);
     expect(pool.idleCount).toBe(pool.totalCount);
   });
-  it('serves health, readiness and a real network HTTP request', async () => {
+  it('serves all assessment endpoints and transfer flows over real network HTTP', async () => {
     expect((await app.inject('/health')).json()).toEqual({ status: 'ok' });
     expect((await app.inject('/ready')).json()).toEqual({ status: 'ready' });
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -842,5 +1155,145 @@ describe('database integrity and rollback', () => {
       balance: '0.00',
       name: 'Real HTTP',
     });
+    const send = async (method: string, path: string, payload?: unknown) => {
+      const result = await fetch(`${address}${path}`, {
+        method,
+        ...(payload === undefined
+          ? {}
+          : {
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(payload),
+            }),
+      });
+      return { status: result.status, data: await result.json() };
+    };
+    const source = await send('POST', '/accounts', { name: 'HTTP source' });
+    const destination = await send('POST', '/accounts', {
+      name: 'HTTP destination',
+    });
+    expect(source.status).toBe(201);
+    expect(destination.status).toBe(201);
+    expect(source.data.id).not.toBe(destination.data.id);
+    const a = source.data.id as string;
+    const b = destination.data.id as string;
+    const deposit = await send('POST', `/accounts/${a}/transactions`, {
+      type: 'credit',
+      amount: '100',
+      reference_id: 'http-deposit',
+    });
+    expect(deposit.status).toBe(201);
+    expect(deposit.data.description).toBe('Credit transaction');
+    expect(
+      (
+        await send('POST', `/accounts/${b}/transactions`, {
+          type: 'credit',
+          amount: '50',
+          reference_id: 'http-deposit',
+        })
+      ).status,
+    ).toBe(201);
+    const duplicate = await send('POST', `/accounts/${a}/transactions`, {
+      type: 'credit',
+      amount: '100',
+      reference_id: 'http-deposit',
+    });
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.data.error.details).toEqual([deposit.data]);
+    const transfer = await send('POST', '/transfers', {
+      from_account_id: a,
+      to_account_id: b,
+      amount: '30',
+      reference_id: 'http-transfer',
+    });
+    expect(transfer.status).toBe(201);
+    expect(transfer.data.transactions).toHaveLength(2);
+    expect(
+      transfer.data.transactions.map(
+        (entry: { description: string }) => entry.description,
+      ),
+    ).toEqual(['Transfer to HTTP destination', 'Transfer from HTTP source']);
+    expect((await send('GET', `/accounts/${a}/balance`)).data).toEqual({
+      account_id: a,
+      balance: '70.00',
+    });
+    expect((await send('GET', `/accounts/${b}/balance`)).data).toEqual({
+      account_id: b,
+      balance: '80.00',
+    });
+    expect(
+      (
+        await send('POST', `/accounts/${a}/transactions`, {
+          type: 'debit',
+          amount: '20',
+          reference_id: 'http-withdrawal',
+        })
+      ).status,
+    ).toBe(201);
+    const insufficient = await send('POST', `/accounts/${a}/transactions`, {
+      type: 'debit',
+      amount: '51',
+      reference_id: 'http-overdraft',
+    });
+    expect(insufficient.status).toBe(422);
+    expect(insufficient.data.error.code).toBe('INSUFFICIENT_BALANCE');
+    const history = await send(
+      'GET',
+      `/accounts/${a}/transactions?page=1&limit=1`,
+    );
+    expect(history.status).toBe(200);
+    expect(history.data.pagination).toEqual({
+      page: 1,
+      limit: 1,
+      total_records: 3,
+      total_pages: 3,
+    });
+    expect(history.data.data[0].reference_id).toBe('http-withdrawal');
+    expect(
+      (await send('GET', `/accounts/${a}/transactions?type=credit`)).data
+        .pagination.total_records,
+    ).toBe(1);
+    expect(
+      (await send('GET', `/accounts/${a}/transactions?type=debit`)).data
+        .pagination.total_records,
+    ).toBe(2);
+    expect(
+      (await send('GET', `/accounts/${a}/transactions?page=0`)).status,
+    ).toBe(400);
+    expect(
+      (await send('GET', `/accounts/${randomUUID()}/balance`)).status,
+    ).toBe(404);
+    expect((await send('GET', '/accounts/invalid/balance')).status).toBe(400);
+    expect(
+      (
+        await send('POST', '/accounts', {
+          name: 'Forbidden initial balance',
+          balance: '1',
+        })
+      ).status,
+    ).toBe(400);
+    for (const method of ['PUT', 'PATCH', 'DELETE']) {
+      expect(
+        (await send(method, `/accounts/${a}/transactions/${deposit.data.id}`))
+          .status,
+      ).toBe(404);
+    }
+    expect(
+      (await send('GET', `/accounts/${a}/transactions?type=credit`)).data.data,
+    ).toEqual([deposit.data]);
+    await reconcile(a, '50.00');
+    await reconcile(b, '80.00');
+  });
+  it('reconciles every account and transfer after the complete assessment scenarios', async () => {
+    const accounts = await pool.query(`SELECT a.id FROM ledger.accounts a
+      LEFT JOIN ledger.transactions t ON t.account_id=a.id GROUP BY a.id
+      HAVING a.balance < 0 OR a.balance <> coalesce(sum(CASE WHEN t.type='credit' THEN t.amount ELSE -t.amount END),0)`);
+    expect(accounts.rows).toEqual([]);
+    const transfers = await pool.query(`SELECT f.id FROM ledger.transfers f
+      LEFT JOIN ledger.transactions t ON t.transfer_id=f.id GROUP BY f.id
+      HAVING count(t.id) <> 2
+        OR count(*) FILTER (WHERE t.type='debit' AND t.account_id=f.from_account_id AND t.amount=f.amount) <> 1
+        OR count(*) FILTER (WHERE t.type='credit' AND t.account_id=f.to_account_id AND t.amount=f.amount) <> 1
+        OR coalesce(sum(CASE WHEN t.type='credit' THEN t.amount ELSE -t.amount END),0) <> 0`);
+    expect(transfers.rows).toEqual([]);
   });
 });

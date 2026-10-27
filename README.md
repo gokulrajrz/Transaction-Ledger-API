@@ -32,15 +32,19 @@ Copy the returned account UUID for the examples below. For durable storage, conf
 
 ## Local Supabase database with persistent storage
 
-Docker must be running. This project uses PostgreSQL port **54362**, Supabase API port 54361 and shadow-database port 54360 to avoid collisions with other local Supabase projects.
+Docker must be running. This project uses PostgreSQL port **54362**, Studio port **54363**, Supabase API port 54361 and shadow-database port 54360 to avoid collisions with other local Supabase projects. The Fastify API remains on port 3000.
 
 ```bash
 nvm use
-npx supabase db start
+npm run supabase:start
 npx supabase migration up --local
 ```
 
-`db start` starts the database service; the API uses the `DATABASE_URL` in `.env` to connect. Before the first API start, configure a separate `ledger_runtime` login and apply [docs/runtime-grants.sql](docs/runtime-grants.sql); keep its real password only in the ignored `.env`. In this workspace the local setup includes that restricted role and `.env` configuration. Then start the API:
+`supabase:start` starts PostgreSQL, Studio and the metadata/API services used by Studio. Open [Supabase Studio](http://127.0.0.1:54363/project/default/editor), then choose the **ledger** schema in the Table Editor to view `accounts`, `transactions` and `transfers`. The default **public** schema does not contain these application tables. This local Studio is separate from the hosted Supabase Dashboard.
+
+If you previously started only PostgreSQL with `npx supabase db start`, the CLI may detect the running database and skip starting Studio. Stop this project's services with `npx supabase stop --project-id confluencr-ledger-api`, then run `npm run supabase:start`. The normal stop command retains database storage; the restart briefly interrupts database connections.
+
+The Fastify API uses the `DATABASE_URL` in `.env` to connect. Before the first API start, configure a separate `ledger_runtime` login and apply [docs/runtime-grants.sql](docs/runtime-grants.sql); keep its real password only in the ignored `.env`. In this workspace the local setup includes that restricted role and `.env` configuration. Then start the API:
 
 ```bash
 npm run dev
@@ -48,14 +52,14 @@ npm run dev
 
 The database is independent of the API process, so stopping `npm run dev` preserves the database and its data. If `dev:local` is running on port 3000, stop that demo before starting `npm run dev`.
 
-The local Supabase database uses Docker storage. Stop it without deleting storage using `npx supabase stop`; do not use reset or no-backup options to stop it. `db start` starts only PostgreSQL; Studio and the other Supabase services are not started by that command.
+The local Supabase database uses Docker storage. Stop this project's services without deleting storage using `npx supabase stop --project-id confluencr-ledger-api`; do not use reset or no-backup options to stop it. `npx supabase db start` remains an option for database-only operation and does not start Studio.
 
 ## Hosted Supabase setup
 
 1. Create/select a **development-only** Supabase project. Inspect existing schemas and migration history first. Never reset a shared/production database.
 2. In the Supabase Dashboard **Connect** panel, copy the actual PostgreSQL URL. Use direct port **5432** when IPv6 works; otherwise use the **session pooler on port 5432** for IPv4. The backend is a persistent service; transaction pooling is unnecessary here. Do not use a Supabase API/service-role key as the database password.
 3. Copy `.env.example` to `.env`; set `DATABASE_URL` to the PostgreSQL URL and optionally `DB_SSL_CA_FILE` to the downloaded Supabase CA PEM. Remote connections always use certificate/hostname verification. TLS/connection override query parameters are rejected; remove those parameters from copied URLs and use the dedicated CA setting. Do not set `rejectUnauthorized: false` or `NODE_TLS_REJECT_UNAUTHORIZED=0`.
-4. Use the installed Supabase CLI and migration-owner credentials to inspect and apply the two additive migrations. Examples below assume `MIGRATION_DATABASE_URL` is securely set in your shell, separate from runtime credentials; npm does not automatically export `.env` into your shell.
+4. Use the installed Supabase CLI and migration-owner credentials to inspect and apply the versioned SQL migrations. Examples below assume `MIGRATION_DATABASE_URL` is securely set in your shell, separate from runtime credentials; npm does not automatically export `.env` into your shell.
 
 ```bash
 npx supabase --version
@@ -112,18 +116,86 @@ See [openapi.yaml](openapi.yaml) for every request, response and error schema. T
 | GET    | `/health`                    | Process availability, 200                                                                                             |
 | GET    | `/ready`                     | Database/schema read readiness, 200 or 503                                                                            |
 
-Example requests (set `ACCOUNT_ID`, `SOURCE_ID`, `DESTINATION_ID` to returned UUIDs):
+### Complete curl workflow
+
+Start the API using one of the setup methods above. Run the following commands in the same second terminal; `-i` displays the HTTP status and response headers as well as the JSON body. The write requests create records in the database used by the API. Start with two new accounts when repeating the workflow, so existing references and balances do not affect the expected results.
 
 ```bash
-curl -X POST "http://127.0.0.1:3000/accounts/$ACCOUNT_ID/transactions" \
+BASE_URL=http://127.0.0.1:3000
+```
+
+**Check process health — `GET /health`.** Expected: 200 and `{"status":"ok"}`.
+
+```bash
+curl -i "$BASE_URL/health"
+```
+
+**Check database readiness — `GET /ready`.** Expected: 200 and `{"status":"ready"}` when the database and required ledger schema are accessible; otherwise 503 with `DATABASE_UNAVAILABLE`.
+
+```bash
+curl -i "$BASE_URL/ready"
+```
+
+**Create accounts — `POST /accounts`.** Each request returns 201 with `id`, `name`, `balance: "0.00"` and `created_at`. IDs and timestamps are generated by PostgreSQL; the request accepts only `name`.
+
+```bash
+curl -i -X POST "$BASE_URL/accounts" \
+  -H 'Content-Type: application/json' -d '{"name":"Alice"}'
+curl -i -X POST "$BASE_URL/accounts" \
+  -H 'Content-Type: application/json' -d '{"name":"Bob"}'
+```
+
+Copy Alice's returned `id` into `SOURCE_ID` and Bob's into `DESTINATION_ID`; replace both placeholders before continuing.
+
+```bash
+SOURCE_ID="paste-alice-uuid-here"
+DESTINATION_ID="paste-bob-uuid-here"
+```
+
+**Add credits — `POST /accounts/:id/transactions`.** These return 201 with the created transaction: `id`, `account_id`, `type`, `amount`, `description`, `reference_id`, `created_at` and `transfer_id` (null for standalone postings). Alice's balance becomes `"100.00"` and Bob's `"50.00"`. The same reference is allowed on different accounts.
+
+```bash
+curl -i -X POST "$BASE_URL/accounts/$SOURCE_ID/transactions" \
   -H 'Content-Type: application/json' \
   -d '{"type":"credit","amount":"100.00","description":"Initial deposit","reference_id":"deposit-001"}'
-curl "http://127.0.0.1:3000/accounts/$ACCOUNT_ID/balance"
-curl "http://127.0.0.1:3000/accounts/$ACCOUNT_ID/transactions?type=credit&page=1&limit=20"
-curl -X POST http://127.0.0.1:3000/transfers \
+curl -i -X POST "$BASE_URL/accounts/$DESTINATION_ID/transactions" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"credit","amount":"50.00","description":"Initial deposit","reference_id":"deposit-001"}'
+```
+
+**Add a debit — `POST /accounts/:id/transactions`.** Expected: 201 with the debit transaction. Alice's balance becomes `"80.00"`. A debit exceeding the available balance returns 422 with `INSUFFICIENT_BALANCE` and makes no changes.
+
+```bash
+curl -i -X POST "$BASE_URL/accounts/$SOURCE_ID/transactions" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"debit","amount":"20.00","description":"Withdrawal","reference_id":"withdrawal-001"}'
+```
+
+**Read the balance — `GET /accounts/:id/balance`.** Expected: 200 with `account_id` equal to Alice's UUID and `balance: "80.00"` at this point in the workflow.
+
+```bash
+curl -i "$BASE_URL/accounts/$SOURCE_ID/balance"
+```
+
+**Read and filter history — `GET /accounts/:id/transactions`.** Each request returns 200 with `data` and `pagination`. The first request returns both transaction types, the second credits only, and the third debits only. Results are latest first. Before the transfer below, Alice has two total records: one credit and one debit. `page` defaults to 1; `limit` defaults to 20 and accepts 1–100.
+
+```bash
+curl -i "$BASE_URL/accounts/$SOURCE_ID/transactions?page=1&limit=20"
+curl -i "$BASE_URL/accounts/$SOURCE_ID/transactions?type=credit&page=1&limit=20"
+curl -i "$BASE_URL/accounts/$SOURCE_ID/transactions?type=debit&page=1&limit=20"
+```
+
+**Transfer money — `POST /transfers`.** Expected: 201 with transfer metadata (`id`, `from_account_id`, `to_account_id`, `amount`, `reference_id`, `created_at`) and a `transactions` array containing its linked debit and credit. Alice's balance becomes `"50.00"`; Bob's becomes `"80.00"`. Both accounts must exist and differ, and Alice must have sufficient funds. Repeating the same source/reference returns 409 with `DUPLICATE_TRANSFER`.
+
+```bash
+curl -i -X POST "$BASE_URL/transfers" \
   -H 'Content-Type: application/json' \
   -d "{\"from_account_id\":\"$SOURCE_ID\",\"to_account_id\":\"$DESTINATION_ID\",\"amount\":\"30.00\",\"reference_id\":\"transfer-001\"}"
+curl -i "$BASE_URL/accounts/$SOURCE_ID/balance"
+curl -i "$BASE_URL/accounts/$DESTINATION_ID/balance"
 ```
+
+Repeating either credit request above returns 409 with `DUPLICATE_TRANSACTION` and the original transaction in `error.details`; it does not add another deposit. Validation, duplicate and insufficient-funds responses use the error contract below. Full JSON schemas and additional response examples are in [openapi.yaml](openapi.yaml).
 
 Histories return `{data: [...], pagination: {page,limit,total_records,total_pages}}`. Totals respect the type filter. Empty histories have `total_pages: 0`. Ordering is `created_at DESC, id DESC`; page numbers must be positive decimal integers, maximum 2,147,483,647. Concurrent writes can appear between count and page queries under READ COMMITTED.
 
@@ -144,6 +216,10 @@ Errors consistently use:
 References preserve exact case/whitespace, must not be blank and are at most 200 characters. Same account + same reference returns **409**, with the original transaction in `error.details`, including when the new payload differs. The same reference on another account is allowed. There is no edit/delete API. The `transfer/` prefix is reserved for internal posting references.
 
 Transfers use unique `(source account, reference)` metadata and generate two postings linked by `transfer_id`. The transfer's user reference belongs to metadata; ledger references are `transfer/<uuid>/debit` and `transfer/<uuid>/credit`. Repeated transfers return 409 with original metadata. They share the history endpoint with standalone postings, which have `transfer_id: null`.
+
+The backend supplies a nonblank `description` for every new ledger entry. Standalone credits and debits preserve a nonblank description supplied by the caller; omitted, empty or whitespace-only values become `Credit transaction` or `Debit transaction`. Transfer entries automatically use `Transfer to Bob` and `Transfer from Alice` for accounts with those names. Transfer requests do not require a description field.
+
+The third migration rejects future SQL inserts with null or blank descriptions. It preserves historical immutable entries, so older descriptions that were already null remain null. No existing ledger row is backfilled or made editable.
 
 ## Architecture and financial integrity
 
@@ -185,7 +261,7 @@ To use another **dedicated test cluster**, explicitly set `TEST_DATABASE_URL` an
 
 Coverage includes: the PDF balance sequence; decimal limits; overdrafts without writes; same-account and cross-account reference rules; ten parallel debits of 20 against 100 (exactly five succeed); ten duplicate credits (exactly one succeeds); reconciliation; filtered pagination and timestamp ties; FK/check/unique enforcement; SQL immutability; overflow and injected failures after ledger insertion; client release/rollback failures; transfer conservation, duplicate races, opposing transfers and full rollback; real HTTP requests, compiled-server shutdown, NUL rejection and readiness failure for incomplete migrations. OpenAPI validation checks documented operations against registered routes.
 
-See [docs/DELIVERY_REPORT.md](docs/DELIVERY_REPORT.md) for actual command results, test counts, review findings and acceptance gates. See [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) for the PDF traceability matrix and [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) for explicit decisions.
+See [docs/ASSESSMENT_TEST_REPORT.md](docs/ASSESSMENT_TEST_REPORT.md) for coverage of each PDF requirement and the final 120-test results on both PostgreSQL and local Supabase. See [docs/DELIVERY_REPORT.md](docs/DELIVERY_REPORT.md) for command results, review findings and acceptance gates. See [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) for the PDF traceability matrix and [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) for explicit decisions.
 
 ## Limitations and submission
 
@@ -193,6 +269,6 @@ See [docs/DELIVERY_REPORT.md](docs/DELIVERY_REPORT.md) for actual command result
 
 Hosted Supabase connection, project-specific grants, CA verification and hosted migrations remain unverified until configured in the designated project. Locally verified SQL and CLI migrations do not prove remote infrastructure works.
 
-Submit the source, `package.json`/lockfile, SQL migrations, Supabase config, OpenAPI and documentation. Exclude `.env`, `node_modules`, build output and local database files. Preserve the original PDF for requirement context. Git publication uses an isolated checkout because the original workspace's `.git` mount is read-only.
+Submit the source, `package.json`/lockfile, SQL migrations, Supabase config, OpenAPI and documentation. Exclude `.env`, `node_modules`, build output and local database files. Preserve the original PDF for requirement context.
 
 Provider guidance: [Supabase database connections](https://supabase.com/docs/guides/database/connecting-to-postgres), [Supabase SSL enforcement](https://supabase.com/docs/guides/platform/ssl-enforcement), [PostgreSQL row locking](https://www.postgresql.org/docs/17/explicit-locking.html).

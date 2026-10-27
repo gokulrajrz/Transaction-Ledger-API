@@ -16,8 +16,12 @@ export async function lockAccount(
   id: string,
   amount: string,
 ) {
-  const result = await client.query<{ id: string; sufficient: boolean }>(
-    'SELECT id, balance >= $2::numeric AS sufficient FROM ledger.accounts WHERE id = $1 FOR UPDATE',
+  const result = await client.query<{
+    id: string;
+    name: string;
+    sufficient: boolean;
+  }>(
+    'SELECT id, name, balance >= $2::numeric AS sufficient FROM ledger.accounts WHERE id = $1 FOR UPDATE',
     [id, amount],
   );
   const account = result.rows[0];
@@ -31,6 +35,9 @@ export async function postEntry(
   input: TransactionInput,
   transferId: string | null = null,
 ) {
+  const description = input.description?.trim()
+    ? input.description
+    : `${input.type === 'credit' ? 'Credit' : 'Debit'} transaction`;
   const result = await client.query<LedgerTransaction>(
     `INSERT INTO ledger.transactions (account_id, type, amount, description, reference_id, transfer_id)
      VALUES ($1, $2, $3::numeric, $4, $5, $6) RETURNING *`,
@@ -38,7 +45,7 @@ export async function postEntry(
       accountId,
       input.type,
       input.amount,
-      input.description ?? null,
+      description,
       input.reference_id,
       transferId,
     ],

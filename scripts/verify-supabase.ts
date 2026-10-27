@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { readdir } from 'node:fs/promises';
 import { createTestDatabase } from '../tests/setup/database.js';
 
 const fixture = await createTestDatabase({ migrate: false });
@@ -49,13 +51,20 @@ try {
   const applied = await fixture.pool.query(
     'SELECT version FROM supabase_migrations.schema_migrations ORDER BY version',
   );
-  if (applied.rowCount !== 2)
-    throw new Error('Expected two recorded Supabase migrations');
+  const expectedVersions = (await readdir('supabase/migrations'))
+    .filter((file) => file.endsWith('.sql'))
+    .sort()
+    .map((file) => file.split('_')[0]);
+  assert.deepEqual(
+    applied.rows.map((row) => row.version),
+    expectedVersions,
+    'Recorded Supabase migrations must match the versioned SQL files',
+  );
   await fixture.pool.query(
     'SELECT id, transfer_id FROM ledger.transactions LIMIT 0',
   );
   process.stdout.write(
-    'Both Supabase migration versions recorded; ledger schema accessible\n',
+    `${expectedVersions.length} Supabase migration versions recorded; ledger schema accessible\n`,
   );
 } finally {
   await fixture.stop();

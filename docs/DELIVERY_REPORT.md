@@ -1,6 +1,6 @@
 # Final engineering report
 
-Verified on 28 October 2026 (Asia/Kolkata). Host runtime was Node 22; all application verification used a temporary Node **24.22.1** installation. PostgreSQL executable reports **17.10**. The source assessment PDF was read in full before implementation.
+Verified on 28 October 2026 (Asia/Kolkata). The default tool shell uses Node 22; application verification used Node **24.22.1**. Tests passed on disposable PostgreSQL **17.10** and local Supabase PostgreSQL **17.11**. The source assessment PDF was read in full before implementation.
 
 ## 1. Final status
 
@@ -49,6 +49,8 @@ Subsequent local setup requested by the user: a dedicated Supabase PostgreSQL **
 
 The ignored `.env` now uses a dedicated `ledger_runtime` login with a generated password. The role has no superuser, database-creation, role-creation or RLS-bypass privileges. Supabase `anon`, `authenticated` and `service_role` roles were checked and have no USAGE on `ledger`. Live verification through the runtime login covered credits, debits, linked transfers, money conservation, ledger reconciliation, and an API HTTP `/ready` response of 200. All verification writes were rolled back. This is a persistent local Supabase database independent of API process lifetime; it does not verify hosted Supabase networking or TLS.
 
+Studio was subsequently enabled on **http://127.0.0.1:54363** with `npm run supabase:start`. Its Table Editor returned HTTP 200 and its metadata service listed all three `ledger` tables. The database-only service was restarted using the normal backup-preserving stop/start workflow to add Studio and its metadata/API services. Before/after fingerprints matched for all existing records: two accounts, five transactions and one transfer from the later live curl demonstration. The Fastify API `/ready` endpoint returned 200 after the restart. Studio users must select the `ledger` schema; it remains outside the public Data API schema list.
+
 - The schema is private `ledger`, outside default public Data API exposure. Source-controlled SQL migrations create accounts, transactions, transfers, FKs, checks, uniqueness, history/destination indexes and immutability triggers.
 - Official project dependency: Supabase CLI 2.122.0. `db push --dry-run` and `db push` both succeeded against a freshly created local disposable database. Both migration versions were checked in `supabase_migrations.schema_migrations`.
 - Runtime-role SQL grants are provided and verified: permitted operations work; system-field inserts, ledger mutation, TRUNCATE and DDL are denied. Database owner/admin access remains trusted.
@@ -56,7 +58,7 @@ The ignored `.env` now uses a dedicated `ledger_runtime` login with a generated 
 
 ## 5. Tests and commands executed
 
-Final automated suite: **105 passed, 0 failed, 0 skipped**, across two files: **37 unit tests** and **68 real PostgreSQL integration tests**. The last complete run finished successfully after the clean lockfile installation and all code fixes.
+Final automated suite: **120 passed, 0 failed, 0 skipped**, across two files: **37 unit tests** and **83 real PostgreSQL integration tests**. The last complete run finished successfully after the clean lockfile installation and all code fixes.
 
 | Command                                        | Final result                                                                                        |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -66,7 +68,7 @@ Final automated suite: **105 passed, 0 failed, 0 skipped**, across two files: **
 | `npm run format:check`                         | PASS                                                                                                |
 | `npm run build`                                | PASS                                                                                                |
 | `npm run docs:validate`                        | PASS; seven operations match registered routes; monetary patterns agree on boundary/invalid samples |
-| `npm test`                                     | PASS; 105/105                                                                                       |
+| `npm test`                                     | PASS; 120/120 on both PostgreSQL environments                                                       |
 | `npm run migrations:verify`                    | PASS; Supabase CLI dry run, application, recorded versions                                          |
 | `npm run runtime:verify`                       | PASS; compiled production server and actual `npm run dev`, real HTTP accounts/postings and shutdown |
 | `npm run dev:local`                            | PASS manual terminal check; starts on port 3000; Ctrl+C confirms temporary database removal         |
@@ -75,6 +77,10 @@ Final automated suite: **105 passed, 0 failed, 0 skipped**, across two files: **
 Build/test commands used Node 24 via a temporary PATH because the host default is Node 22. Tests and TypeScript runners required execution outside the restricted sandbox to bind local TCP/IPC sockets; these are environment permissions, not disabled application checks. A clean install also needed that execution context for esbuild's binary validation. The initial dependency resolver error was resolved using npm 11; subsequent clean `npm ci` with the lockfile passed. ESLint was updated from the deprecated major 9 to maintained major 10.
 
 Integration tests create a fresh, randomly named database with a unique ownership marker; cleanup validates name, owner and marker before deleting only that database. Default tests launch actual PostgreSQL in a private temporary directory. No financial concurrency or ACID assertion relies on mocks. Unit mocks cover validation-before-access, client ownership, rollback failure, ambiguous commit and sanitized failure responses.
+
+The subsequent PDF-directed assessment verification ran the expanded final suite against both disposable PostgreSQL and isolated databases on local Supabase. All 109 tests passed in both environments; complete verification also passed on Supabase. It added full transaction-field assertions, all immutable-column checks, ledger-insert failure injection, common error-contract checks, real HTTP flows for every assessment endpoint, and final account/transfer reconciliation. A test-only explicit SET-role grant fixed compatibility with Supabase’s non-superuser admin. Before/after fingerprints confirmed the persistent app data and migration history were unchanged, with no test databases or roles left behind. See [ASSESSMENT_TEST_REPORT.md](ASSESSMENT_TEST_REPORT.md) for the full PDF requirement matrix and reproduction steps.
+
+Following the user's requirement to always add descriptions, the backend now generates missing/blank credit and debit descriptions and named transfer descriptions. Migration `20261028000300` enforces nonblank descriptions for future rows without rewriting immutable history. Eleven new cases bring the final suite to 120 passing tests (37 unit, 83 integration) on both PostgreSQL environments. Full verification passed on Supabase, including all three SQL migration versions. The migration was then applied locally; existing ledger fingerprints and balances matched exactly, including the two legacy NULL descriptions. The prior 109-test assessment run remains historical evidence for the earlier implementation.
 
 ## 6. Data integrity evidence
 

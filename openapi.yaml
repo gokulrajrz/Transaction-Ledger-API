@@ -294,7 +294,11 @@ components:
       properties:
         type: { type: string, enum: [credit, debit] }
         amount: { $ref: '#/components/schemas/Amount' }
-        description: { type: string, maxLength: 2000, pattern: '^[^\u0000]*$' }
+        description:
+          type: string
+          maxLength: 2000
+          pattern: '^[^\u0000]*$'
+          description: Nonblank text is preserved. If omitted, empty or whitespace-only, the backend generates Credit transaction or Debit transaction. Explicit null is rejected.
         reference_id:
           allOf:
             - { $ref: '#/components/schemas/Reference' }
@@ -345,7 +349,16 @@ components:
           allOf:
             - { $ref: '#/components/schemas/Amount' }
           description: Output always has two fractional digits.
-        description: { type: string, nullable: true, maxLength: 2000 }
+        description:
+          type: string
+          nullable: true
+          maxLength: 2000
+          description: >-
+            Nonblank for newly created entries. Standalone postings preserve supplied
+            text or receive Credit transaction / Debit transaction. Transfer entries
+            receive Transfer to <destination name> / Transfer from <source name>.
+            Null is retained only for historical immutable rows created before the
+            description requirement.
         reference_id: { $ref: '#/components/schemas/Reference' }
         created_at: { type: string, format: date-time }
         transfer_id:

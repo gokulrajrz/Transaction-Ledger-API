@@ -53,6 +53,7 @@ export async function transferMoney(pool: Pool, input: TransferInput) {
         {
           type: 'debit',
           amount: input.amount,
+          description: `Transfer to ${accounts.get(input.to_account_id)!.name}`,
           reference_id: `transfer/${transfer.id}/debit`,
         },
         transfer.id,
@@ -63,6 +64,7 @@ export async function transferMoney(pool: Pool, input: TransferInput) {
         {
           type: 'credit',
           amount: input.amount,
+          description: `Transfer from ${accounts.get(input.from_account_id)!.name}`,
           reference_id: `transfer/${transfer.id}/credit`,
         },
         transfer.id,

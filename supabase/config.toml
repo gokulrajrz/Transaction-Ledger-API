@@ -17,3 +17,7 @@ enabled = true
 
 [db.seed]
 enabled = false
+
+[studio]
+enabled = true
+port = 54363

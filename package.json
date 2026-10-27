@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
     "dev:local": "node --import tsx scripts/local.ts",
+    "supabase:start": "supabase start --exclude gotrue,realtime,storage-api,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor",
     "build": "tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=.env dist/server.js",
     "typecheck": "tsc --noEmit",
